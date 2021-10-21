@@ -480,6 +480,19 @@ func (m *Manager) upgradeExtension(ext Extension, force bool) error {
 	if ext.kind == BinaryKind {
 		err = m.upgradeBinExtension(ext)
 	} else {
+		// Check if git extension has changed to a binary extension
+		var isBin bool
+		repo, err := ghrepo.FromPath(filepath.Join(ext.Path(), "../.git"))
+		if err == nil {
+			isBin, err = isBinExtension(m.client, repo)
+		}
+		if isBin {
+			err = m.Remove(ext.Name())
+			if err != nil {
+				return fmt.Errorf("failed to migrate to new precompiled extension format: %w", err)
+			}
+			return m.installBin(repo)
+		}
 		err = m.upgradeGitExtension(ext, force)
 	}
 	return err

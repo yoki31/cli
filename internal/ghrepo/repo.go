@@ -91,6 +91,32 @@ func FromURL(u *url.URL) (Interface, error) {
 	return NewWithHost(parts[0], strings.TrimSuffix(parts[1], ".git"), u.Hostname()), nil
 }
 
+func FromPath(path string) (Interface, error) {
+	remotes, err := git.RemotesForPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(remotes) == 0 {
+		return nil, fmt.Errorf("no remotes configured for %s", path)
+	}
+
+	var remote *git.Remote
+
+	for _, r := range remotes {
+		if r.Name == "origin" {
+			remote = r
+			break
+		}
+	}
+
+	if remote == nil {
+		remote = remotes[0]
+	}
+
+	return FromURL(remote.FetchURL)
+}
+
 func normalizeHostname(h string) string {
 	return strings.ToLower(strings.TrimPrefix(h, "www."))
 }
