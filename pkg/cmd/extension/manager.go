@@ -482,9 +482,9 @@ func (m *Manager) upgradeExtension(ext Extension, force bool) error {
 	} else {
 		// Check if git extension has changed to a binary extension
 		var isBin bool
-		repo, err := ghrepo.FromPath(filepath.Join(ext.Path(), "../.git"))
-		if err == nil {
-			isBin, err = isBinExtension(m.client, repo)
+		repo, repoErr := ghrepo.FromPath(filepath.Join(ext.Path(), "../.git"))
+		if repoErr == nil {
+			isBin, _ = isBinExtension(m.client, repo)
 		}
 		if isBin {
 			err = m.Remove(ext.Name())
