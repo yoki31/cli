@@ -14,6 +14,7 @@ import (
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/internal/run"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/stretchr/testify/assert"
@@ -270,6 +271,52 @@ func TestManager_UpgradeExtension_GitExtension_Force(t *testing.T) {
 		extensionDir,
 		gitDir,
 	), stdout.String())
+	assert.Equal(t, "", stderr.String())
+}
+
+func TestManager_MigrateToBinaryExtension(t *testing.T) {
+	tempDir := t.TempDir()
+	assert.NoError(t, stubExtension(filepath.Join(tempDir, "extensions", "gh-remote", "gh-remote")))
+	io, _, stdout, stderr := iostreams.Test()
+
+	reg := httpmock.Registry{}
+	defer reg.Verify(t)
+	client := http.Client{Transport: &reg}
+	m := newTestManager(tempDir, &client, io)
+	exts, err := m.list(false)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(exts))
+	ext := exts[0]
+	ext.currentVersion = "old version"
+	ext.latestVersion = "new version"
+
+	rs, restoreRun := run.Stub()
+	defer restoreRun(t)
+
+	rs.Register("git remote -v", 0, "TODO")
+	// TODO y no wrk
+	rs.Register(`git config --get-regexp ^remote\..*\.gh-resolved$`, 0, "TODO2")
+
+	reg.Register(
+		httpmock.REST("GET", "repos/owner/gh-remote/releases/latest"),
+		httpmock.JSONResponse(
+			release{
+				Tag: "v1.0.2",
+				Assets: []releaseAsset{
+					{
+						Name:   "gh-remote-windows-amd64",
+						APIURL: "release/cool2",
+					},
+				},
+			}))
+	reg.Register(
+		httpmock.REST("GET", "release/cool2"),
+		httpmock.StringResponse("FAKE UPGRADED BINARY"))
+
+	err = m.upgradeExtension(ext, false)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "TODO", stdout.String())
 	assert.Equal(t, "", stderr.String())
 }
 

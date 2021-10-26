@@ -327,7 +327,6 @@ func (m *Manager) Install(repo ghrepo.Interface) error {
 		return err
 	}
 	if !hs {
-		// TODO open an issue hint, here?
 		return errors.New("extension is uninstallable: missing executable")
 	}
 
@@ -481,12 +480,16 @@ func (m *Manager) upgradeExtension(ext Extension, force bool) error {
 		err = m.upgradeBinExtension(ext)
 	} else {
 		// Check if git extension has changed to a binary extension
+		fmt.Printf("DBG %#v\n", "SUP")
 		var isBin bool
 		repo, repoErr := ghrepo.FromPath(filepath.Join(ext.Path(), "../.git"))
+		fmt.Printf("DBG %#v\n", repoErr)
 		if repoErr == nil {
+			fmt.Printf("DBG %#v\n", repo)
 			isBin, _ = isBinExtension(m.client, repo)
 		}
 		if isBin {
+			fmt.Printf("DBG %#v\n", "migrating")
 			err = m.Remove(ext.Name())
 			if err != nil {
 				return fmt.Errorf("failed to migrate to new precompiled extension format: %w", err)
