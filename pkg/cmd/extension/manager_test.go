@@ -304,18 +304,30 @@ func TestManager_MigrateToBinaryExtension(t *testing.T) {
 				Assets: []releaseAsset{
 					{
 						Name:   "gh-remote-windows-amd64",
-						APIURL: "release/cool2",
+						APIURL: "/release/cool",
 					},
 				},
 			}))
 	reg.Register(
-		httpmock.REST("GET", "release/cool2"),
+		httpmock.REST("GET", "repos/owner/gh-remote/releases/latest"),
+		httpmock.JSONResponse(
+			release{
+				Tag: "v1.0.2",
+				Assets: []releaseAsset{
+					{
+						Name:   "gh-remote-windows-amd64",
+						APIURL: "/release/cool",
+					},
+				},
+			}))
+	reg.Register(
+		httpmock.REST("GET", "release/cool"),
 		httpmock.StringResponse("FAKE UPGRADED BINARY"))
 
 	err = m.upgradeExtension(ext, false)
 	assert.NoError(t, err)
 
-	assert.Equal(t, "TODO", stdout.String())
+	assert.Equal(t, "", stdout.String())
 	assert.Equal(t, "", stderr.String())
 }
 
