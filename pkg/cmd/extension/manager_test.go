@@ -331,6 +331,26 @@ func TestManager_MigrateToBinaryExtension(t *testing.T) {
 
 	assert.Equal(t, "", stdout.String())
 	assert.Equal(t, "", stderr.String())
+
+	manifest, err := os.ReadFile(filepath.Join(tempDir, "extensions/gh-remote", manifestName))
+	assert.NoError(t, err)
+
+	var bm binManifest
+	err = yaml.Unmarshal(manifest, &bm)
+	assert.NoError(t, err)
+
+	assert.Equal(t, binManifest{
+		Name:  "gh-remote",
+		Owner: "owner",
+		Host:  "github.com",
+		Tag:   "v1.0.2",
+		Path:  filepath.Join(tempDir, "extensions/gh-remote/gh-remote"),
+	}, bm)
+
+	fakeBin, err := os.ReadFile(filepath.Join(tempDir, "extensions/gh-remote/gh-remote"))
+	assert.NoError(t, err)
+
+	assert.Equal(t, "FAKE UPGRADED BINARY", string(fakeBin))
 }
 
 func TestManager_UpgradeExtension_BinaryExtension(t *testing.T) {
