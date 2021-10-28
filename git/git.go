@@ -85,11 +85,10 @@ func CurrentBranch() (string, error) {
 }
 
 func listRemotesForPath(path string) ([]string, error) {
-	remoteCmd, err := GitCommand("remote", "-v")
+	remoteCmd, err := GitCommand("-C", path, "remote", "-v")
 	if err != nil {
 		return nil, err
 	}
-	remoteCmd.Env = append(remoteCmd.Env, fmt.Sprintf("GIT_DIR=%s", path))
 	output, err := run.PrepareCmd(remoteCmd).Output()
 	return outputLines(output), err
 }

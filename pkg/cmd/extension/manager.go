@@ -482,7 +482,7 @@ func (m *Manager) upgradeExtension(ext Extension, force bool) error {
 	} else {
 		// Check if git extension has changed to a binary extension
 		var isBin bool
-		repo, repoErr := repoFromPath(filepath.Join(ext.Path(), "../.git"))
+		repo, repoErr := repoFromPath(filepath.Join(ext.Path(), ".."))
 		if repoErr == nil {
 			isBin, _ = isBinExtension(m.client, repo)
 		}
