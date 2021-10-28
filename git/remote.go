@@ -35,11 +35,11 @@ func (r *Remote) String() string {
 	return r.Name
 }
 
-func remotes(remoteList []string) (RemoteSet, error) {
+func remotes(path string, remoteList []string) (RemoteSet, error) {
 	remotes := parseRemotes(remoteList)
 
 	// this is affected by SetRemoteResolution
-	remoteCmd, err := GitCommand("config", "--get-regexp", `^remote\..*\.gh-resolved$`)
+	remoteCmd, err := GitCommand("-C", path, "config", "--get-regexp", `^remote\..*\.gh-resolved$`)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func RemotesForPath(path string) (RemoteSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	return remotes(list)
+	return remotes(path, list)
 }
 
 // Remotes gets the git remotes set for the current repo
@@ -79,7 +79,7 @@ func Remotes() (RemoteSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	return remotes(list)
+	return remotes(".", list)
 }
 
 func parseRemotes(gitRemotes []string) (remotes RemoteSet) {

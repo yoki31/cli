@@ -293,11 +293,10 @@ func TestManager_MigrateToBinaryExtension(t *testing.T) {
 	rs, restoreRun := run.Stub()
 	defer restoreRun(t)
 
-	invocation := fmt.Sprintf("git -C %s remote -v",
-		filepath.Join(tempDir, "extensions", "gh-remote"))
+	gitInvocation := fmt.Sprintf("git -C %s", filepath.Join(tempDir, "extensions", "gh-remote"))
 
-	rs.Register(invocation, 0, "origin  git@github.com:owner/gh-remote.git (fetch)\norigin  git@github.com:owner/gh-remote.git (push)")
-	rs.Register(`git config --get-regexp \^.*`, 0, "remote.origin.gh-resolve base")
+	rs.Register(gitInvocation+" remote -v", 0, "origin  git@github.com:owner/gh-remote.git (fetch)\norigin  git@github.com:owner/gh-remote.git (push)")
+	rs.Register(gitInvocation+` config --get-regexp \^.*`, 0, "remote.origin.gh-resolve base")
 
 	reg.Register(
 		httpmock.REST("GET", "repos/owner/gh-remote/releases/latest"),
