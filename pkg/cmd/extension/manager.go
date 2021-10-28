@@ -18,6 +18,7 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
+	"github.com/cli/cli/v2/git"
 	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/extensions"
@@ -481,7 +482,7 @@ func (m *Manager) upgradeExtension(ext Extension, force bool) error {
 	} else {
 		// Check if git extension has changed to a binary extension
 		var isBin bool
-		repo, repoErr := ghrepo.FromPath(filepath.Join(ext.Path(), "../.git"))
+		repo, repoErr := repoFromPath(filepath.Join(ext.Path(), "../.git"))
 		if repoErr == nil {
 			isBin, _ = isBinExtension(m.client, repo)
 		}
@@ -653,6 +654,32 @@ func isBinExtension(client *http.Client, repo ghrepo.Interface) (isBin bool, err
 	}
 
 	return
+}
+
+func repoFromPath(path string) (ghrepo.Interface, error) {
+	remotes, err := git.RemotesForPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(remotes) == 0 {
+		return nil, fmt.Errorf("no remotes configured for %s", path)
+	}
+
+	var remote *git.Remote
+
+	for _, r := range remotes {
+		if r.Name == "origin" {
+			remote = r
+			break
+		}
+	}
+
+	if remote == nil {
+		remote = remotes[0]
+	}
+
+	return ghrepo.FromURL(remote.FetchURL)
 }
 
 func possibleDists() []string {
