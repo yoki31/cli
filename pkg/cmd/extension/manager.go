@@ -542,6 +542,10 @@ func (m *Manager) Create(name string, binary bool) error {
 		return err
 	}
 
+	if binary {
+		return binaryScaffolding(name)
+	}
+
 	fileTmpl := heredoc.Docf(`
 		#!/usr/bin/env bash
 		set -e
@@ -593,6 +597,11 @@ func (m *Manager) Create(name string, binary bool) error {
 	addCmd := m.newCommand(exe, "-C", dir, "--git-dir="+filepath.Join(dir, ".git"), "add", name, "--chmod=+x")
 	err = addCmd.Run()
 	return err
+}
+
+func binaryScaffolding(name string) error {
+	// TODO
+	return nil
 }
 
 func runCmds(cmds []*exec.Cmd) error {
