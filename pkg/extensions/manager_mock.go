@@ -19,7 +19,7 @@ var _ ExtensionManager = &ExtensionManagerMock{}
 //
 // 		// make and configure a mocked ExtensionManager
 // 		mockedExtensionManager := &ExtensionManagerMock{
-// 			CreateFunc: func(name string) error {
+// 			CreateFunc: func(name string, binary bool) error {
 // 				panic("mock out the Create method")
 // 			},
 // 			DispatchFunc: func(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (bool, error) {
@@ -48,7 +48,7 @@ var _ ExtensionManager = &ExtensionManagerMock{}
 // 	}
 type ExtensionManagerMock struct {
 	// CreateFunc mocks the Create method.
-	CreateFunc func(name string) error
+	CreateFunc func(name string, binary bool) error
 
 	// DispatchFunc mocks the Dispatch method.
 	DispatchFunc func(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (bool, error)
@@ -74,6 +74,8 @@ type ExtensionManagerMock struct {
 		Create []struct {
 			// Name is the name argument value.
 			Name string
+			// Binary is the binary argument value.
+			Binary bool
 		}
 		// Dispatch holds details about calls to the Dispatch method.
 		Dispatch []struct {
@@ -124,29 +126,33 @@ type ExtensionManagerMock struct {
 }
 
 // Create calls CreateFunc.
-func (mock *ExtensionManagerMock) Create(name string) error {
+func (mock *ExtensionManagerMock) Create(name string, binary bool) error {
 	if mock.CreateFunc == nil {
 		panic("ExtensionManagerMock.CreateFunc: method is nil but ExtensionManager.Create was just called")
 	}
 	callInfo := struct {
-		Name string
+		Name   string
+		Binary bool
 	}{
-		Name: name,
+		Name:   name,
+		Binary: binary,
 	}
 	mock.lockCreate.Lock()
 	mock.calls.Create = append(mock.calls.Create, callInfo)
 	mock.lockCreate.Unlock()
-	return mock.CreateFunc(name)
+	return mock.CreateFunc(name, binary)
 }
 
 // CreateCalls gets all the calls that were made to Create.
 // Check the length with:
 //     len(mockedExtensionManager.CreateCalls())
 func (mock *ExtensionManagerMock) CreateCalls() []struct {
-	Name string
+	Name   string
+	Binary bool
 } {
 	var calls []struct {
-		Name string
+		Name   string
+		Binary bool
 	}
 	mock.lockCreate.RLock()
 	calls = mock.calls.Create

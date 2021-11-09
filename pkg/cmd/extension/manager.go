@@ -525,7 +525,7 @@ func (m *Manager) installDir() string {
 	return filepath.Join(m.dataDir(), "extensions")
 }
 
-func (m *Manager) Create(name string) error {
+func (m *Manager) Create(name string, binary bool) error {
 	exe, err := m.lookPath("git")
 	if err != nil {
 		return err

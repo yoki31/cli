@@ -504,7 +504,7 @@ func TestManager_Create(t *testing.T) {
 	assert.NoError(t, os.Chdir(tempDir))
 	t.Cleanup(func() { _ = os.Chdir(oldWd) })
 	m := newTestManager(tempDir, nil, nil)
-	err := m.Create("gh-test")
+	err := m.Create("gh-test", false)
 	assert.NoError(t, err)
 	files, err := ioutil.ReadDir(filepath.Join(tempDir, "gh-test"))
 	assert.NoError(t, err)

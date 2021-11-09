@@ -157,7 +157,7 @@ func NewCmdExtension(f *cmdutil.Factory) *cobra.Command {
 			return cmd
 		}(),
 		&cobra.Command{
-			Use:   "remove <name>",
+			Use:   "remove <name> [--precompiled]",
 			Short: "Remove an installed extension",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
@@ -172,24 +172,32 @@ func NewCmdExtension(f *cmdutil.Factory) *cobra.Command {
 				return nil
 			},
 		},
-		&cobra.Command{
-			Use:   "create <name>",
-			Short: "Create a new extension",
-			Args:  cmdutil.ExactArgs(1, "must specify a name for the extension"),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				extName := args[0]
-				if !strings.HasPrefix(extName, "gh-") {
-					extName = "gh-" + extName
-				}
-				if err := m.Create(extName); err != nil {
-					return err
-				}
-				if !io.IsStdoutTTY() {
-					return nil
-				}
-				link := "https://docs.github.com/github-cli/github-cli/creating-github-cli-extensions"
-				cs := io.ColorScheme()
-				out := heredoc.Docf(`
+		func() *cobra.Command {
+			var flagBinary bool
+			cmd := &cobra.Command{
+				Use:   "create <name>",
+				Short: "Create a new extension",
+				Args:  cmdutil.ExactArgs(1, "must specify a name for the extension"),
+				RunE: func(cmd *cobra.Command, args []string) error {
+					extName := args[0]
+					if !strings.HasPrefix(extName, "gh-") {
+						extName = "gh-" + extName
+					}
+					if err := m.Create(extName, flagBinary); err != nil {
+						return err
+					}
+					if !io.IsStdoutTTY() {
+						return nil
+					}
+					binaryNote := ""
+					if flagBinary {
+						binaryNote = heredoc.Doc(`
+							Don't forget to compile your extension as %[2]s while developing to see changes.
+						`)
+					}
+					link := "https://docs.github.com/github-cli/github-cli/creating-github-cli-extensions"
+					cs := io.ColorScheme()
+					out := heredoc.Docf(`
 					%[1]s Created directory %[2]s
 					%[1]s Initialized git repository
 					%[1]s Set up extension scaffolding
@@ -197,16 +205,19 @@ func NewCmdExtension(f *cmdutil.Factory) *cobra.Command {
 					%[2]s is ready for development
 
 					Install locally with: cd %[2]s && gh extension install .
-
+					%[4]s
 					Publish to GitHub with: gh repo create %[2]s
 
 					For more information on writing extensions:
 					%[3]s
-				`, cs.SuccessIcon(), extName, link)
-				fmt.Fprint(io.Out, out)
-				return nil
-			},
-		},
+				`, cs.SuccessIcon(), extName, link, binaryNote)
+					fmt.Fprint(io.Out, out)
+					return nil
+				},
+			}
+			cmd.Flags().BoolVarP(&flagBinary, "precompiled", "p", false, "Create a precompiled extension")
+			return cmd
+		}(),
 	)
 
 	return &extCmd

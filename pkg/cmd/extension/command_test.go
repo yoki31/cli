@@ -266,7 +266,7 @@ func TestNewCmdExtension(t *testing.T) {
 			name: "create extension tty",
 			args: []string{"create", "test"},
 			managerStubs: func(em *extensions.ExtensionManagerMock) func(*testing.T) {
-				em.CreateFunc = func(name string) error {
+				em.CreateFunc = func(name string, binary bool) error {
 					return nil
 				}
 				return func(t *testing.T) {
@@ -295,7 +295,7 @@ func TestNewCmdExtension(t *testing.T) {
 			name: "create extension notty",
 			args: []string{"create", "gh-test"},
 			managerStubs: func(em *extensions.ExtensionManagerMock) func(*testing.T) {
-				em.CreateFunc = func(name string) error {
+				em.CreateFunc = func(name string, binary bool) error {
 					return nil
 				}
 				return func(t *testing.T) {
