@@ -543,7 +543,7 @@ func (m *Manager) Create(name string, binary bool) error {
 	}
 
 	if binary {
-		return binaryScaffolding(name)
+		return m.binaryScaffolding(exe, name)
 	}
 
 	fileTmpl := heredoc.Docf(`
@@ -599,9 +599,55 @@ func (m *Manager) Create(name string, binary bool) error {
 	return err
 }
 
-func binaryScaffolding(name string) error {
-	// TODO
-	return nil
+func (m *Manager) binaryScaffolding(gitExe, name string) error {
+	err := os.MkdirAll(filepath.Join(name, ".github", "workflows"), 0755)
+	if err != nil {
+		return err
+	}
+	workflow := heredoc.Doc(`
+	name: release
+	on:
+	  push:
+	    tags:
+	      - "v*"
+	permissions:
+	  contents: write
+	
+	jobs:
+	  release:
+	    runs-on: ubuntu-latest
+	    steps:
+	      - uses: actions/checkout@v2
+	      - uses: cli/gh-extension-precompile@v1
+	`)
+	workflowPath := filepath.Join(".github", "workflows", "release.yml")
+	err = ioutil.WriteFile(filepath.Join(name, workflowPath), []byte(workflow), 0755)
+	if err != nil {
+		return err
+	}
+
+	// TODO put in some helpers
+	mainGo := heredoc.Doc(`
+	package main
+	import "fmt"
+
+	func main() {
+		fmt.Println("hi world")
+	}`)
+	mainPath := "main.go"
+	err = ioutil.WriteFile(filepath.Join(name, mainPath), []byte(mainGo), 0755)
+	if err != nil {
+		return err
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Join(wd, name)
+	addCmd := m.newCommand(gitExe, "-C", dir, "--git-dir="+filepath.Join(dir, ".git"), "add", workflowPath, mainPath)
+	return addCmd.Run()
 }
 
 func runCmds(cmds []*exec.Cmd) error {

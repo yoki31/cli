@@ -189,11 +189,14 @@ func NewCmdExtension(f *cmdutil.Factory) *cobra.Command {
 					if !io.IsStdoutTTY() {
 						return nil
 					}
+					// TODO prompt if they want to use Go or something else then set up scaffolding accordingly.
+					// If go, lay out a main.go with a go.mod and some useful functions
+					// If !go, lay out a compile script and tweak the workflow file accordingly
 					binaryNote := ""
 					if flagBinary {
-						binaryNote = heredoc.Doc(`
-							Don't forget to compile your extension as %[2]s while developing to see changes.
-						`)
+						binaryNote = heredoc.Docf(`
+							Don't forget to compile your extension as %s while developing to see changes.
+						`, extName)
 					}
 					link := "https://docs.github.com/github-cli/github-cli/creating-github-cli-extensions"
 					cs := io.ColorScheme()
