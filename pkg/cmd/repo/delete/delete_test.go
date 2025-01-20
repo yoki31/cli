@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/internal/prompter"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
-	"github.com/cli/cli/v2/pkg/prompt"
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
 )
@@ -24,30 +25,37 @@ func TestNewCmdDelete(t *testing.T) {
 	}{
 		{
 			name:   "confirm flag",
+			tty:    true,
 			input:  "OWNER/REPO --confirm",
 			output: DeleteOptions{RepoArg: "OWNER/REPO", Confirmed: true},
 		},
 		{
-			name:    "no confirmation no tty",
+			name:   "yes flag",
+			tty:    true,
+			input:  "OWNER/REPO --yes",
+			output: DeleteOptions{RepoArg: "OWNER/REPO", Confirmed: true},
+		},
+		{
+			name:    "no confirmation notty",
 			input:   "OWNER/REPO",
 			output:  DeleteOptions{RepoArg: "OWNER/REPO"},
 			wantErr: true,
-			errMsg:  "could not prompt: confirmation with prompt or --confirm flag required"},
+			errMsg:  "--yes required when not running interactively",
+		},
 		{
-			name:    "no argument",
-			input:   "",
-			wantErr: true,
-			errMsg:  "cannot delete: repository argument required",
-			tty:     true,
+			name:   "base repo resolution",
+			input:  "",
+			tty:    true,
+			output: DeleteOptions{},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			io, _, _, _ := iostreams.Test()
-			io.SetStdinTTY(tt.tty)
-			io.SetStdoutTTY(tt.tty)
+			ios, _, _, _ := iostreams.Test()
+			ios.SetStdinTTY(tt.tty)
+			ios.SetStdoutTTY(tt.tty)
 			f := &cmdutil.Factory{
-				IOStreams: io,
+				IOStreams: ios,
 			}
 			argv, err := shlex.Split(tt.input)
 			assert.NoError(t, err)
@@ -75,24 +83,25 @@ func TestNewCmdDelete(t *testing.T) {
 
 func Test_deleteRun(t *testing.T) {
 	tests := []struct {
-		name       string
-		tty        bool
-		opts       *DeleteOptions
-		httpStubs  func(*httpmock.Registry)
-		askStubs   func(*prompt.AskStubber)
-		wantStdout string
-		wantErr    bool
-		errMsg     string
+		name          string
+		tty           bool
+		opts          *DeleteOptions
+		httpStubs     func(*httpmock.Registry)
+		prompterStubs func(*prompter.PrompterMock)
+		wantStdout    string
+		wantStderr    string
+		wantErr       bool
+		errMsg        string
 	}{
 		{
 			name:       "prompting confirmation tty",
 			tty:        true,
 			opts:       &DeleteOptions{RepoArg: "OWNER/REPO"},
 			wantStdout: "✓ Deleted repository OWNER/REPO\n",
-			askStubs: func(q *prompt.AskStubber) {
-				// TODO: survey stubber doesn't have WithValidator support
-				// so this always passes regardless of prompt input
-				q.StubOne("OWNER/REPO")
+			prompterStubs: func(p *prompter.PrompterMock) {
+				p.ConfirmDeletionFunc = func(_ string) error {
+					return nil
+				}
 			},
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
@@ -101,7 +110,23 @@ func Test_deleteRun(t *testing.T) {
 			},
 		},
 		{
-			name: "confimation no tty",
+			name:       "infer base repo",
+			tty:        true,
+			opts:       &DeleteOptions{},
+			wantStdout: "✓ Deleted repository OWNER/REPO\n",
+			prompterStubs: func(p *prompter.PrompterMock) {
+				p.ConfirmDeletionFunc = func(_ string) error {
+					return nil
+				}
+			},
+			httpStubs: func(reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.REST("DELETE", "repos/OWNER/REPO"),
+					httpmock.StatusStringResponse(204, "{}"))
+			},
+		},
+		{
+			name: "confirmation no tty",
 			opts: &DeleteOptions{
 				RepoArg:   "OWNER/REPO",
 				Confirmed: true,
@@ -117,8 +142,10 @@ func Test_deleteRun(t *testing.T) {
 			opts:       &DeleteOptions{RepoArg: "REPO"},
 			wantStdout: "✓ Deleted repository OWNER/REPO\n",
 			tty:        true,
-			askStubs: func(q *prompt.AskStubber) {
-				q.StubOne("OWNER/REPO")
+			prompterStubs: func(p *prompter.PrompterMock) {
+				p.ConfirmDeletionFunc = func(_ string) error {
+					return nil
+				}
 			},
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
@@ -129,12 +156,28 @@ func Test_deleteRun(t *testing.T) {
 					httpmock.StatusStringResponse(204, "{}"))
 			},
 		},
+		{
+			name:       "repo transferred ownership",
+			opts:       &DeleteOptions{RepoArg: "OWNER/REPO", Confirmed: true},
+			wantErr:    true,
+			errMsg:     "SilentError",
+			wantStderr: "X Failed to delete repository: OWNER/REPO has changed name or transferred ownership\n",
+			httpStubs: func(reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.REST("DELETE", "repos/OWNER/REPO"),
+					httpmock.StatusStringResponse(307, "{}"))
+			},
+		},
 	}
 	for _, tt := range tests {
-		q, teardown := prompt.InitAskStubber()
-		defer teardown()
-		if tt.askStubs != nil {
-			tt.askStubs(q)
+		pm := &prompter.PrompterMock{}
+		if tt.prompterStubs != nil {
+			tt.prompterStubs(pm)
+		}
+		tt.opts.Prompter = pm
+
+		tt.opts.BaseRepo = func() (ghrepo.Interface, error) {
+			return ghrepo.New("OWNER", "REPO"), nil
 		}
 
 		reg := &httpmock.Registry{}
@@ -145,10 +188,10 @@ func Test_deleteRun(t *testing.T) {
 			return &http.Client{Transport: reg}, nil
 		}
 
-		io, _, stdout, _ := iostreams.Test()
-		io.SetStdinTTY(tt.tty)
-		io.SetStdoutTTY(tt.tty)
-		tt.opts.IO = io
+		ios, _, stdout, stderr := iostreams.Test()
+		ios.SetStdinTTY(tt.tty)
+		ios.SetStdoutTTY(tt.tty)
+		tt.opts.IO = ios
 
 		t.Run(tt.name, func(t *testing.T) {
 			defer reg.Verify(t)
@@ -160,6 +203,7 @@ func Test_deleteRun(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantStdout, stdout.String())
+			assert.Equal(t, tt.wantStderr, stderr.String())
 		})
 	}
 }

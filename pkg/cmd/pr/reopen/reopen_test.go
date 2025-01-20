@@ -2,7 +2,7 @@ package reopen
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"testing"
 
@@ -18,13 +18,13 @@ import (
 )
 
 func runCommand(rt http.RoundTripper, isTTY bool, cli string) (*test.CmdOut, error) {
-	io, _, stdout, stderr := iostreams.Test()
-	io.SetStdoutTTY(isTTY)
-	io.SetStdinTTY(isTTY)
-	io.SetStderrTTY(isTTY)
+	ios, _, stdout, stderr := iostreams.Test()
+	ios.SetStdoutTTY(isTTY)
+	ios.SetStdinTTY(isTTY)
+	ios.SetStderrTTY(isTTY)
 
 	factory := &cmdutil.Factory{
-		IOStreams: io,
+		IOStreams: ios,
 		HttpClient: func() (*http.Client, error) {
 			return &http.Client{Transport: rt}, nil
 		},
@@ -39,8 +39,8 @@ func runCommand(rt http.RoundTripper, isTTY bool, cli string) (*test.CmdOut, err
 	cmd.SetArgs(argv)
 
 	cmd.SetIn(&bytes.Buffer{})
-	cmd.SetOut(ioutil.Discard)
-	cmd.SetErr(ioutil.Discard)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
 
 	_, err = cmd.ExecuteC()
 	return &test.CmdOut{
@@ -71,7 +71,7 @@ func TestPRReopen(t *testing.T) {
 	output, err := runCommand(http, true, "123")
 	assert.NoError(t, err)
 	assert.Equal(t, "", output.String())
-	assert.Equal(t, "✓ Reopened pull request #123 (The title of the PR)\n", output.Stderr())
+	assert.Equal(t, "✓ Reopened pull request OWNER/REPO#123 (The title of the PR)\n", output.Stderr())
 }
 
 func TestPRReopen_alreadyOpen(t *testing.T) {
@@ -88,7 +88,7 @@ func TestPRReopen_alreadyOpen(t *testing.T) {
 	output, err := runCommand(http, true, "123")
 	assert.NoError(t, err)
 	assert.Equal(t, "", output.String())
-	assert.Equal(t, "! Pull request #123 (The title of the PR) is already open\n", output.Stderr())
+	assert.Equal(t, "! Pull request OWNER/REPO#123 (The title of the PR) is already open\n", output.Stderr())
 }
 
 func TestPRReopen_alreadyMerged(t *testing.T) {
@@ -105,5 +105,41 @@ func TestPRReopen_alreadyMerged(t *testing.T) {
 	output, err := runCommand(http, true, "123")
 	assert.EqualError(t, err, "SilentError")
 	assert.Equal(t, "", output.String())
-	assert.Equal(t, "X Pull request #123 (The title of the PR) can't be reopened because it was already merged\n", output.Stderr())
+	assert.Equal(t, "X Pull request OWNER/REPO#123 (The title of the PR) can't be reopened because it was already merged\n", output.Stderr())
+}
+
+func TestPRReopen_withComment(t *testing.T) {
+	http := &httpmock.Registry{}
+	defer http.Verify(t)
+
+	shared.RunCommandFinder("123", &api.PullRequest{
+		ID:     "THE-ID",
+		Number: 123,
+		State:  "CLOSED",
+		Title:  "The title of the PR",
+	}, ghrepo.New("OWNER", "REPO"))
+
+	http.Register(
+		httpmock.GraphQL(`mutation CommentCreate\b`),
+		httpmock.GraphQLMutation(`
+		{ "data": { "addComment": { "commentEdge": { "node": {
+			"url": "https://github.com/OWNER/REPO/issues/123#issuecomment-456"
+		} } } } }`,
+			func(inputs map[string]interface{}) {
+				assert.Equal(t, "THE-ID", inputs["subjectId"])
+				assert.Equal(t, "reopening comment", inputs["body"])
+			}),
+	)
+	http.Register(
+		httpmock.GraphQL(`mutation PullRequestReopen\b`),
+		httpmock.GraphQLMutation(`{"id": "THE-ID"}`,
+			func(inputs map[string]interface{}) {
+				assert.Equal(t, inputs["pullRequestId"], "THE-ID")
+			}),
+	)
+
+	output, err := runCommand(http, true, "123 --comment 'reopening comment'")
+	assert.NoError(t, err)
+	assert.Equal(t, "", output.String())
+	assert.Equal(t, "✓ Reopened pull request OWNER/REPO#123 (The title of the PR)\n", output.Stderr())
 }

@@ -6,16 +6,16 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/tableprinter"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
-	"github.com/cli/cli/v2/utils"
 	"github.com/spf13/cobra"
 )
 
 type ListOptions struct {
 	IO         *iostreams.IOStreams
-	Config     func() (config.Config, error)
+	Config     func() (gh.Config, error)
 	HTTPClient func() (*http.Client, error)
 }
 
@@ -27,9 +27,10 @@ func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Comman
 	}
 
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "Lists GPG keys in your GitHub account",
-		Args:  cobra.ExactArgs(0),
+		Use:     "list",
+		Short:   "Lists GPG keys in your GitHub account",
+		Aliases: []string{"ls"},
+		Args:    cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runF != nil {
 				return runF(opts)
@@ -52,14 +53,11 @@ func listRun(opts *ListOptions) error {
 		return err
 	}
 
-	host, err := cfg.DefaultHost()
-	if err != nil {
-		return err
-	}
+	host, _ := cfg.Authentication().DefaultHost()
 
 	gpgKeys, err := userKeys(apiClient, host, "")
 	if err != nil {
-		if errors.Is(err, scopesError) {
+		if errors.Is(err, errScopes) {
 			cs := opts.IO.ColorScheme()
 			fmt.Fprint(opts.IO.ErrOut, "Error: insufficient OAuth scopes to list GPG keys\n")
 			fmt.Fprintf(opts.IO.ErrOut, "Run the following to grant scopes: %s\n", cs.Bold("gh auth refresh -s read:gpg_key"))
@@ -69,35 +67,27 @@ func listRun(opts *ListOptions) error {
 	}
 
 	if len(gpgKeys) == 0 {
-		fmt.Fprintln(opts.IO.ErrOut, "No GPG keys present in GitHub account.")
-		return cmdutil.SilentError
+		return cmdutil.NewNoResultsError("no GPG keys present in the GitHub account")
 	}
 
-	t := utils.NewTablePrinter(opts.IO)
+	t := tableprinter.New(opts.IO, tableprinter.WithHeader("EMAIL", "KEY ID", "PUBLIC KEY", "ADDED", "EXPIRES"))
 	cs := opts.IO.ColorScheme()
 	now := time.Now()
 
 	for _, gpgKey := range gpgKeys {
-		t.AddField(gpgKey.Emails.String(), nil, nil)
-		t.AddField(gpgKey.KeyId, nil, nil)
-		t.AddField(gpgKey.PublicKey, truncateMiddle, nil)
-
-		createdAt := gpgKey.CreatedAt.Format(time.RFC3339)
-		if t.IsTTY() {
-			createdAt = "Created " + utils.FuzzyAgoAbbr(now, gpgKey.CreatedAt)
-		}
-		t.AddField(createdAt, nil, cs.Gray)
-
+		t.AddField(gpgKey.Emails.String())
+		t.AddField(gpgKey.KeyID)
+		t.AddField(gpgKey.PublicKey, tableprinter.WithTruncate(truncateMiddle))
+		t.AddTimeField(now, gpgKey.CreatedAt, cs.Gray)
 		expiresAt := gpgKey.ExpiresAt.Format(time.RFC3339)
 		if t.IsTTY() {
 			if gpgKey.ExpiresAt.IsZero() {
-				expiresAt = "Never expires"
+				expiresAt = "Never"
 			} else {
-				expiresAt = "Expires " + gpgKey.ExpiresAt.Format("2006-01-02")
+				expiresAt = gpgKey.ExpiresAt.Format("2006-01-02")
 			}
 		}
-		t.AddField(expiresAt, nil, cs.Gray)
-
+		t.AddField(expiresAt, tableprinter.WithColor(cs.Gray))
 		t.EndRow()
 	}
 

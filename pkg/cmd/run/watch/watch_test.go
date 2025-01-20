@@ -2,18 +2,19 @@ package watch
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"net/http"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/internal/prompter"
 	"github.com/cli/cli/v2/pkg/cmd/run/shared"
+	workflowShared "github.com/cli/cli/v2/pkg/cmd/workflow/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
-	"github.com/cli/cli/v2/pkg/prompt"
+	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
 )
@@ -60,12 +61,12 @@ func TestNewCmdWatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			io, _, _, _ := iostreams.Test()
-			io.SetStdinTTY(tt.tty)
-			io.SetStdoutTTY(tt.tty)
+			ios, _, _, _ := iostreams.Test()
+			ios.SetStdinTTY(tt.tty)
+			ios.SetStdoutTTY(tt.tty)
 
 			f := &cmdutil.Factory{
-				IOStreams: io,
+				IOStreams: ios,
 			}
 
 			argv, err := shlex.Split(tt.cli)
@@ -78,8 +79,8 @@ func TestNewCmdWatch(t *testing.T) {
 			})
 			cmd.SetArgs(argv)
 			cmd.SetIn(&bytes.Buffer{})
-			cmd.SetOut(ioutil.Discard)
-			cmd.SetErr(ioutil.Discard)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
 
 			_, err = cmd.ExecuteC()
 			if tt.wantsErr {
@@ -99,13 +100,13 @@ func TestNewCmdWatch(t *testing.T) {
 
 func TestWatchRun(t *testing.T) {
 	failedRunStubs := func(reg *httpmock.Registry) {
-		inProgressRun := shared.TestRun("more runs", 2, shared.InProgress, "")
-		completedRun := shared.TestRun("more runs", 2, shared.Completed, shared.Failure)
+		inProgressRun := shared.TestRunWithCommit(2, shared.InProgress, "", "commit2")
+		completedRun := shared.TestRun(2, shared.Completed, shared.Failure)
 		reg.Register(
 			httpmock.REST("GET", "repos/OWNER/REPO/actions/runs"),
 			httpmock.JSONResponse(shared.RunsPayload{
 				WorkflowRuns: []shared.Run{
-					shared.TestRun("run", 1, shared.InProgress, ""),
+					shared.TestRunWithCommit(1, shared.InProgress, "", "commit1"),
 					inProgressRun,
 				},
 			}))
@@ -129,15 +130,28 @@ func TestWatchRun(t *testing.T) {
 		reg.Register(
 			httpmock.REST("GET", "repos/OWNER/REPO/check-runs/20/annotations"),
 			httpmock.JSONResponse(shared.FailedJobAnnotations))
+		reg.Register(
+			httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows"),
+			httpmock.JSONResponse(workflowShared.WorkflowsPayload{
+				Workflows: []workflowShared.Workflow{
+					shared.TestWorkflow,
+				},
+			}))
+		reg.Register(
+			httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+			httpmock.JSONResponse(shared.TestWorkflow))
+		reg.Register(
+			httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+			httpmock.JSONResponse(shared.TestWorkflow))
 	}
 	successfulRunStubs := func(reg *httpmock.Registry) {
-		inProgressRun := shared.TestRun("more runs", 2, shared.InProgress, "")
-		completedRun := shared.TestRun("more runs", 2, shared.Completed, shared.Success)
+		inProgressRun := shared.TestRunWithCommit(2, shared.InProgress, "", "commit2")
+		completedRun := shared.TestRun(2, shared.Completed, shared.Success)
 		reg.Register(
 			httpmock.REST("GET", "repos/OWNER/REPO/actions/runs"),
 			httpmock.JSONResponse(shared.RunsPayload{
 				WorkflowRuns: []shared.Run{
-					shared.TestRun("run", 1, shared.InProgress, ""),
+					shared.TestRunWithCommit(1, shared.InProgress, "", "commit1"),
 					inProgressRun,
 				},
 			}))
@@ -164,19 +178,30 @@ func TestWatchRun(t *testing.T) {
 					shared.SuccessfulJob,
 				},
 			}))
+		reg.Register(
+			httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows"),
+			httpmock.JSONResponse(workflowShared.WorkflowsPayload{
+				Workflows: []workflowShared.Workflow{
+					shared.TestWorkflow,
+				},
+			}))
+		reg.Register(
+			httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+			httpmock.JSONResponse(shared.TestWorkflow))
+		reg.Register(
+			httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+			httpmock.JSONResponse(shared.TestWorkflow))
 	}
 
 	tests := []struct {
 		name        string
 		httpStubs   func(*httpmock.Registry)
-		askStubs    func(*prompt.AskStubber)
+		promptStubs func(*prompter.MockPrompter)
 		opts        *WatchOptions
 		tty         bool
 		wantErr     bool
 		errMsg      string
 		wantOut     string
-		onlyWindows bool
-		skipWindows bool
 	}{
 		{
 			name: "run ID provided run already completed",
@@ -187,8 +212,11 @@ func TestWatchRun(t *testing.T) {
 				reg.Register(
 					httpmock.REST("GET", "repos/OWNER/REPO/actions/runs/1234"),
 					httpmock.JSONResponse(shared.FailedRun))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+					httpmock.JSONResponse(shared.TestWorkflow))
 			},
-			wantOut: "Run failed (1234) has already completed with 'failure'\n",
+			wantOut: "Run CI (1234) has already completed with 'failure'\n",
 		},
 		{
 			name: "already completed, exit status",
@@ -200,8 +228,11 @@ func TestWatchRun(t *testing.T) {
 				reg.Register(
 					httpmock.REST("GET", "repos/OWNER/REPO/actions/runs/1234"),
 					httpmock.JSONResponse(shared.FailedRun))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+					httpmock.JSONResponse(shared.TestWorkflow))
 			},
-			wantOut: "Run failed (1234) has already completed with 'failure'\n",
+			wantOut: "Run CI (1234) has already completed with 'failure'\n",
 			wantErr: true,
 			errMsg:  "SilentError",
 		},
@@ -222,79 +253,120 @@ func TestWatchRun(t *testing.T) {
 							shared.SuccessfulRun,
 						},
 					}))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows"),
+					httpmock.JSONResponse(workflowShared.WorkflowsPayload{
+						Workflows: []workflowShared.Workflow{
+							shared.TestWorkflow,
+						},
+					}))
 			},
 		},
 		{
-			name:        "interval respected",
-			skipWindows: true,
-			tty:         true,
+			name: "interval respected",
+			tty:  true,
 			opts: &WatchOptions{
 				Interval: 0,
 				Prompt:   true,
 			},
 			httpStubs: successfulRunStubs,
-			askStubs: func(as *prompt.AskStubber) {
-				as.StubOne(1)
+			promptStubs: func(pm *prompter.MockPrompter) {
+				pm.RegisterSelect("Select a workflow run",
+					[]string{"* commit1, CI [trunk] Feb 23, 2021", "* commit2, CI [trunk] Feb 23, 2021"},
+					func(_, _ string, opts []string) (int, error) {
+						return prompter.IndexFor(opts, "* commit2, CI [trunk] Feb 23, 2021")
+					})
 			},
-			wantOut: "\x1b[2J\x1b[0;0H\x1b[JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n* trunk more runs · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\n\x1b[0;0H\x1b[JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n✓ trunk more runs · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\n\n✓ Run more runs (2) completed with 'success'\n",
+			wantOut: "\x1b[?1049h\x1b[0;0H\x1b[JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n* trunk CI · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\n\x1b[?1049l✓ trunk CI · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\n\n✓ Run CI (2) completed with 'success'\n",
 		},
 		{
-			name:        "interval respected, windows",
-			onlyWindows: true,
-			opts: &WatchOptions{
-				Interval: 0,
-				Prompt:   true,
-			},
-			httpStubs: successfulRunStubs,
-			askStubs: func(as *prompt.AskStubber) {
-				as.StubOne(1)
-			},
-			wantOut: "\x1b[2J\x1b[2JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n* trunk more runs · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\n\x1b[2JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n✓ trunk more runs · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\n",
-		},
-		{
-			name:        "exit status respected",
-			tty:         true,
-			skipWindows: true,
+			name: "exit status respected",
+			tty:  true,
 			opts: &WatchOptions{
 				Interval:   0,
 				Prompt:     true,
 				ExitStatus: true,
 			},
 			httpStubs: failedRunStubs,
-			askStubs: func(as *prompt.AskStubber) {
-				as.StubOne(1)
+			promptStubs: func(pm *prompter.MockPrompter) {
+				pm.RegisterSelect("Select a workflow run",
+					[]string{"* commit1, CI [trunk] Feb 23, 2021", "* commit2, CI [trunk] Feb 23, 2021"},
+					func(_, _ string, opts []string) (int, error) {
+						return prompter.IndexFor(opts, "* commit2, CI [trunk] Feb 23, 2021")
+					})
 			},
-			wantOut: "\x1b[2J\x1b[0;0H\x1b[JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n* trunk more runs · 2\nTriggered via push about 59 minutes ago\n\n\x1b[0;0H\x1b[JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\nX trunk more runs · 2\nTriggered via push about 59 minutes ago\n\nJOBS\nX sad job in 4m34s (ID 20)\n  ✓ barf the quux\n  X quux the barf\n\nANNOTATIONS\nX the job is sad\nsad job: blaze.py#420\n\n\nX Run more runs (2) completed with 'failure'\n",
+			wantOut: "\x1b[?1049h\x1b[0;0H\x1b[JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n* trunk CI · 2\nTriggered via push about 59 minutes ago\n\n\x1b[?1049lX trunk CI · 2\nTriggered via push about 59 minutes ago\n\nJOBS\nX sad job in 4m34s (ID 20)\n  ✓ barf the quux\n  X quux the barf\n\nANNOTATIONS\nX the job is sad\nsad job: blaze.py#420\n\n\nX Run CI (2) completed with 'failure'\n",
 			wantErr: true,
 			errMsg:  "SilentError",
 		},
 		{
-			name:        "exit status respected, windows",
-			onlyWindows: true,
+			name: "failed to get run status",
+			tty:  true,
 			opts: &WatchOptions{
-				Interval:   0,
-				Prompt:     true,
-				ExitStatus: true,
+				RunID: "1234",
 			},
-			httpStubs: failedRunStubs,
-			askStubs: func(as *prompt.AskStubber) {
-				as.StubOne(1)
+			httpStubs: func(reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/runs/1234"),
+					httpmock.JSONResponse(shared.TestRunWithCommit(1234, shared.InProgress, "", "commit2")),
+				)
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+					httpmock.JSONResponse(shared.TestWorkflow),
+				)
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/runs/1234"),
+					httpmock.StatusJSONResponse(404, api.HTTPError{
+						StatusCode: 404,
+						Message:    "run 1234 not found",
+					}),
+				)
 			},
-			wantOut: "\x1b[2J\x1b[2JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\n* trunk more runs · 2\nTriggered via push about 59 minutes ago\n\n\x1b[2JRefreshing run status every 0 seconds. Press Ctrl+C to quit.\n\nX trunk more runs · 2\nTriggered via push about 59 minutes ago\n\nJOBS\nX sad job in 4m34s (ID 20)\n  ✓ barf the quux\n  X quux the barf\n\nANNOTATIONS\nX the job is sad\nsad job: blaze.py#420\n\n",
+			wantOut: "\x1b[?1049h\x1b[?1049l",
 			wantErr: true,
-			errMsg:  "SilentError",
+			errMsg:  "failed to get run: HTTP 404: run 1234 not found (https://api.github.com/repos/OWNER/REPO/actions/runs/1234?exclude_pull_requests=true)",
+		},
+		{
+			name: "annotation endpoint forbidden (fine grained tokens)",
+			tty:  true,
+			opts: &WatchOptions{
+				RunID: "2",
+			},
+			httpStubs: func(reg *httpmock.Registry) {
+				inProgressRun := shared.TestRunWithCommit(2, shared.InProgress, "", "commit2")
+				completedRun := shared.TestRun(2, shared.Completed, shared.Success)
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/runs/2"),
+					httpmock.JSONResponse(inProgressRun))
+				reg.Register(
+					httpmock.REST("GET", "runs/2/jobs"),
+					httpmock.JSONResponse(shared.JobsPayload{
+						Jobs: []shared.Job{
+							shared.SuccessfulJob,
+							shared.FailedJob,
+						},
+					}))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/check-runs/10/annotations"),
+					httpmock.JSONResponse(shared.SuccessfulJobAnnotations))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/check-runs/20/annotations"),
+					httpmock.StatusStringResponse(403, "Forbidden"))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/runs/2"),
+					httpmock.JSONResponse(completedRun))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+					httpmock.JSONResponse(shared.TestWorkflow))
+				reg.Register(
+					httpmock.REST("GET", "repos/OWNER/REPO/actions/workflows/123"),
+					httpmock.JSONResponse(shared.TestWorkflow))
+			},
+			wantOut: "\x1b[?1049h\x1b[?1049l✓ trunk CI · 2\nTriggered via push about 59 minutes ago\n\nJOBS\n✓ cool job in 4m34s (ID 10)\n  ✓ fob the barz\n  ✓ barz the fob\nX sad job in 4m34s (ID 20)\n  ✓ barf the quux\n  X quux the barf\n\nANNOTATIONS\nrequesting annotations returned 403 Forbidden as the token does not have sufficient permissions. Note that it is not currently possible to create a fine-grained PAT with the `checks:read` permission.\n✓ Run CI (2) completed with 'success'\n",
 		},
 	}
 
 	for _, tt := range tests {
-		if runtime.GOOS == "windows" {
-			if tt.skipWindows {
-				continue
-			}
-		} else if tt.onlyWindows {
-			continue
-		}
-
 		reg := &httpmock.Registry{}
 		tt.httpStubs(reg)
 		tt.opts.HttpClient = func() (*http.Client, error) {
@@ -306,27 +378,31 @@ func TestWatchRun(t *testing.T) {
 			return notnow
 		}
 
-		io, _, stdout, _ := iostreams.Test()
-		io.SetStdoutTTY(tt.tty)
-		tt.opts.IO = io
+		ios, _, stdout, _ := iostreams.Test()
+		ios.SetStdoutTTY(tt.tty)
+		ios.SetAlternateScreenBufferEnabled(tt.tty)
+		tt.opts.IO = ios
 		tt.opts.BaseRepo = func() (ghrepo.Interface, error) {
 			return ghrepo.FromFullName("OWNER/REPO")
 		}
 
-		as, teardown := prompt.InitAskStubber()
-		defer teardown()
-		if tt.askStubs != nil {
-			tt.askStubs(as)
-		}
-
 		t.Run(tt.name, func(t *testing.T) {
+			pm := prompter.NewMockPrompter(t)
+			tt.opts.Prompter = pm
+			if tt.promptStubs != nil {
+				tt.promptStubs(pm)
+			}
+
 			err := watchRun(tt.opts)
 			if tt.wantErr {
 				assert.EqualError(t, err, tt.errMsg)
 			} else {
 				assert.NoError(t, err)
 			}
-			assert.Equal(t, tt.wantOut, stdout.String())
+			// avoiding using `assert.Equal` here because it would print raw escape sequences to stdout
+			if got := stdout.String(); got != tt.wantOut {
+				t.Errorf("got stdout:\n%q\nwant:\n%q", got, tt.wantOut)
+			}
 			reg.Verify(t)
 		})
 	}

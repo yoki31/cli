@@ -5,23 +5,23 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/AlecAivazis/survey/v2"
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
-	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/internal/prompter"
 	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/cli/cli/v2/pkg/markdown"
-	"github.com/cli/cli/v2/pkg/prompt"
-	"github.com/cli/cli/v2/pkg/surveyext"
 	"github.com/spf13/cobra"
 )
 
 type ReviewOptions struct {
 	HttpClient func() (*http.Client, error)
-	Config     func() (config.Config, error)
+	Config     func() (gh.Config, error)
 	IO         *iostreams.IOStreams
+	Prompter   prompter.Prompter
 
 	Finder shared.PRFinder
 
@@ -36,6 +36,7 @@ func NewCmdReview(f *cmdutil.Factory, runF func(*ReviewOptions) error) *cobra.Co
 		IO:         f.IOStreams,
 		HttpClient: f.HttpClient,
 		Config:     f.Config,
+		Prompter:   f.Prompter,
 	}
 
 	var (
@@ -156,15 +157,11 @@ func reviewRun(opts *ReviewOptions) error {
 
 	var reviewData *api.PullRequestReviewInput
 	if opts.InteractiveMode {
-		editorCommand, err := cmdutil.DetermineEditor(opts.Config)
+		reviewData, err = reviewSurvey(opts)
 		if err != nil {
 			return err
 		}
-		reviewData, err = reviewSurvey(opts.IO, editorCommand)
-		if err != nil {
-			return err
-		}
-		if reviewData == nil && err == nil {
+		if reviewData == nil {
 			fmt.Fprint(opts.IO.ErrOut, "Discarding.\n")
 			return nil
 		}
@@ -194,106 +191,65 @@ func reviewRun(opts *ReviewOptions) error {
 
 	switch reviewData.State {
 	case api.ReviewComment:
-		fmt.Fprintf(opts.IO.ErrOut, "%s Reviewed pull request #%d\n", cs.Gray("-"), pr.Number)
+		fmt.Fprintf(opts.IO.ErrOut, "%s Reviewed pull request %s#%d\n", cs.Gray("-"), ghrepo.FullName(baseRepo), pr.Number)
 	case api.ReviewApprove:
-		fmt.Fprintf(opts.IO.ErrOut, "%s Approved pull request #%d\n", cs.SuccessIcon(), pr.Number)
+		fmt.Fprintf(opts.IO.ErrOut, "%s Approved pull request %s#%d\n", cs.SuccessIcon(), ghrepo.FullName(baseRepo), pr.Number)
 	case api.ReviewRequestChanges:
-		fmt.Fprintf(opts.IO.ErrOut, "%s Requested changes to pull request #%d\n", cs.Red("+"), pr.Number)
+		fmt.Fprintf(opts.IO.ErrOut, "%s Requested changes to pull request %s#%d\n", cs.Red("+"), ghrepo.FullName(baseRepo), pr.Number)
 	}
 
 	return nil
 }
 
-func reviewSurvey(io *iostreams.IOStreams, editorCommand string) (*api.PullRequestReviewInput, error) {
-	typeAnswers := struct {
-		ReviewType string
-	}{}
-	typeQs := []*survey.Question{
-		{
-			Name: "reviewType",
-			Prompt: &survey.Select{
-				Message: "What kind of review do you want to give?",
-				Options: []string{
-					"Comment",
-					"Approve",
-					"Request changes",
-				},
-			},
-		},
-	}
-
-	err := prompt.SurveyAsk(typeQs, &typeAnswers)
+func reviewSurvey(opts *ReviewOptions) (*api.PullRequestReviewInput, error) {
+	options := []string{"Comment", "Approve", "Request Changes"}
+	reviewType, err := opts.Prompter.Select(
+		"What kind of review do you want to give?",
+		options[0],
+		options)
 	if err != nil {
 		return nil, err
 	}
 
 	var reviewState api.PullRequestReviewState
 
-	switch typeAnswers.ReviewType {
-	case "Approve":
-		reviewState = api.ReviewApprove
-	case "Request changes":
-		reviewState = api.ReviewRequestChanges
-	case "Comment":
+	switch reviewType {
+	case 0:
 		reviewState = api.ReviewComment
+	case 1:
+		reviewState = api.ReviewApprove
+	case 2:
+		reviewState = api.ReviewRequestChanges
 	default:
 		panic("unreachable state")
 	}
-
-	bodyAnswers := struct {
-		Body string
-	}{}
 
 	blankAllowed := false
 	if reviewState == api.ReviewApprove {
 		blankAllowed = true
 	}
 
-	bodyQs := []*survey.Question{
-		{
-			Name: "body",
-			Prompt: &surveyext.GhEditor{
-				BlankAllowed:  blankAllowed,
-				EditorCommand: editorCommand,
-				Editor: &survey.Editor{
-					Message:  "Review body",
-					FileName: "*.md",
-				},
-			},
-		},
-	}
-
-	err = prompt.SurveyAsk(bodyQs, &bodyAnswers)
+	body, err := opts.Prompter.MarkdownEditor("Review body", "", blankAllowed)
 	if err != nil {
 		return nil, err
 	}
 
-	if bodyAnswers.Body == "" && (reviewState == api.ReviewComment || reviewState == api.ReviewRequestChanges) {
+	if body == "" && (reviewState == api.ReviewComment || reviewState == api.ReviewRequestChanges) {
 		return nil, errors.New("this type of review cannot be blank")
 	}
 
-	if len(bodyAnswers.Body) > 0 {
-		style := markdown.GetStyle(io.DetectTerminalTheme())
-		renderedBody, err := markdown.Render(bodyAnswers.Body, style)
+	if len(body) > 0 {
+		renderedBody, err := markdown.Render(body,
+			markdown.WithTheme(opts.IO.TerminalTheme()),
+			markdown.WithWrap(opts.IO.TerminalWidth()))
 		if err != nil {
 			return nil, err
 		}
 
-		fmt.Fprintf(io.Out, "Got:\n%s", renderedBody)
+		fmt.Fprintf(opts.IO.Out, "Got:\n%s", renderedBody)
 	}
 
-	confirm := false
-	confirmQs := []*survey.Question{
-		{
-			Name: "confirm",
-			Prompt: &survey.Confirm{
-				Message: "Submit?",
-				Default: true,
-			},
-		},
-	}
-
-	err = prompt.SurveyAsk(confirmQs, &confirm)
+	confirm, err := opts.Prompter.Confirm("Submit?", true)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +259,7 @@ func reviewSurvey(io *iostreams.IOStreams, editorCommand string) (*api.PullReque
 	}
 
 	return &api.PullRequestReviewInput{
-		Body:  bodyAnswers.Body,
+		Body:  body,
 		State: reviewState,
 	}, nil
 }

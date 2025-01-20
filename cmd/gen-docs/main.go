@@ -2,13 +2,18 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/docs"
+	"github.com/cli/cli/v2/internal/gh"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/root"
 	"github.com/cli/cli/v2/pkg/cmdutil"
+	"github.com/cli/cli/v2/pkg/extensions"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/spf13/pflag"
 )
@@ -40,10 +45,14 @@ func run(args []string) error {
 		return fmt.Errorf("error: --doc-path not set")
 	}
 
-	io, _, _, _ := iostreams.Test()
-	rootCmd := root.NewCmdRoot(&cmdutil.Factory{
-		IOStreams: io,
+	ios, _, _, _ := iostreams.Test()
+	rootCmd, _ := root.NewCmdRoot(&cmdutil.Factory{
+		IOStreams: ios,
 		Browser:   &browser{},
+		Config: func() (gh.Config, error) {
+			return config.NewFromString(""), nil
+		},
+		ExtensionManager: &em{},
 	}, "", "")
 	rootCmd.InitDefaultHelpCmd()
 
@@ -58,13 +67,7 @@ func run(args []string) error {
 	}
 
 	if *manPage {
-		header := &docs.GenManHeader{
-			Title:   "gh",
-			Section: "1",
-			Source:  "",
-			Manual:  "",
-		}
-		if err := docs.GenManTree(rootCmd, header, *dir); err != nil {
+		if err := docs.GenManTree(rootCmd, *dir); err != nil {
 			return err
 		}
 	}
@@ -85,8 +88,46 @@ func linkHandler(name string) string {
 	return fmt.Sprintf("./%s", strings.TrimSuffix(name, ".md"))
 }
 
+// Implements browser.Browser interface.
 type browser struct{}
 
-func (b *browser) Browse(url string) error {
+func (b *browser) Browse(_ string) error {
 	return nil
+}
+
+// Implements extensions.ExtensionManager interface.
+type em struct{}
+
+func (e *em) List() []extensions.Extension {
+	return nil
+}
+
+func (e *em) Install(_ ghrepo.Interface, _ string) error {
+	return nil
+}
+
+func (e *em) InstallLocal(_ string) error {
+	return nil
+}
+
+func (e *em) Upgrade(_ string, _ bool) error {
+	return nil
+}
+
+func (e *em) Remove(_ string) error {
+	return nil
+}
+
+func (e *em) Dispatch(_ []string, _ io.Reader, _, _ io.Writer) (bool, error) {
+	return false, nil
+}
+
+func (e *em) Create(_ string, _ extensions.ExtTemplateType) error {
+	return nil
+}
+
+func (e *em) EnableDryRunMode() {}
+
+func (e *em) UpdateDir(_ string) string {
+	return ""
 }

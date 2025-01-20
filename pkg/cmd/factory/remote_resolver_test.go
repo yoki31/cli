@@ -2,26 +2,26 @@ package factory
 
 import (
 	"net/url"
-	"os"
 	"testing"
 
-	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/git"
 	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
+	ghmock "github.com/cli/cli/v2/internal/gh/mock"
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_remoteResolver(t *testing.T) {
-	orig_GH_HOST := os.Getenv("GH_HOST")
-	t.Cleanup(func() {
-		os.Setenv("GH_HOST", orig_GH_HOST)
-	})
+type identityTranslator struct{}
 
+func (it identityTranslator) Translate(u *url.URL) *url.URL {
+	return u
+}
+
+func Test_remoteResolver(t *testing.T) {
 	tests := []struct {
 		name     string
 		remotes  func() (git.RemoteSet, error)
-		config   func() (config.Config, error)
-		override string
+		config   gh.Config
 		output   []string
 		wantsErr bool
 	}{
@@ -32,9 +32,16 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://github.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`hosts:`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{})
+					authCfg.SetDefaultHost("github.com", "default")
+					return authCfg
+				}
+				return cfg
+			}(),
 			wantsErr: true,
 		},
 		{
@@ -42,13 +49,16 @@ func Test_remoteResolver(t *testing.T) {
 			remotes: func() (git.RemoteSet, error) {
 				return git.RemoteSet{}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetDefaultHost("example.com", "hosts")
+					return authCfg
+				}
+				return cfg
+			}(),
 			wantsErr: true,
 		},
 		{
@@ -58,13 +68,17 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://test.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetActiveToken("", "")
+					authCfg.SetDefaultHost("example.com", "hosts")
+					return authCfg
+				}
+				return cfg
+			}(),
 			wantsErr: true,
 		},
 		{
@@ -74,30 +88,35 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://github.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetDefaultHost("example.com", "hosts")
+					return authCfg
+				}
+				return cfg
+			}(),
 			output: []string{"origin"},
 		},
 		{
 			name: "one authenticated host with matching git remote",
 			remotes: func() (git.RemoteSet, error) {
 				return git.RemoteSet{
-					git.NewRemote("upstream", "https://github.com/owner/repo.git"),
 					git.NewRemote("origin", "https://example.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetDefaultHost("example.com", "default")
+					return authCfg
+				}
+				return cfg
+			}(),
 			output: []string{"origin"},
 		},
 		{
@@ -110,13 +129,16 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("fork", "https://example.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetDefaultHost("example.com", "default")
+					return authCfg
+				}
+				return cfg
+			}(),
 			output: []string{"upstream", "github", "origin", "fork"},
 		},
 		{
@@ -126,15 +148,17 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://test.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				    github.com:
-				      oauth_token: GHTOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com", "github.com"})
+					authCfg.SetActiveToken("", "")
+					authCfg.SetDefaultHost("example.com", "default")
+					return authCfg
+				}
+				return cfg
+			}(),
 			wantsErr: true,
 		},
 		{
@@ -145,15 +169,16 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://example.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				    github.com:
-				      oauth_token: GHTOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com", "github.com"})
+					authCfg.SetDefaultHost("github.com", "default")
+					return authCfg
+				}
+				return cfg
+			}(),
 			output: []string{"origin"},
 		},
 		{
@@ -167,15 +192,16 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("test", "https://test.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				    github.com:
-				      oauth_token: GHTOKEN
-				`)), nil
-			},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com", "github.com"})
+					authCfg.SetDefaultHost("github.com", "default")
+					return authCfg
+				}
+				return cfg
+			}(),
 			output: []string{"upstream", "github", "origin", "fork"},
 		},
 		{
@@ -185,14 +211,16 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://example.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.InheritEnv(config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`))), nil
-			},
-			override: "test.com",
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetDefaultHost("test.com", "GH_HOST")
+					return authCfg
+				}
+				return cfg
+			}(),
 			wantsErr: true,
 		},
 		{
@@ -203,15 +231,17 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://test.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.InheritEnv(config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`))), nil
-			},
-			override: "test.com",
-			output:   []string{"origin"},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com"})
+					authCfg.SetDefaultHost("test.com", "GH_HOST")
+					return authCfg
+				}
+				return cfg
+			}(),
+			output: []string{"origin"},
 		},
 		{
 			name: "override host with multiple matching git remotes",
@@ -222,29 +252,26 @@ func Test_remoteResolver(t *testing.T) {
 					git.NewRemote("origin", "https://test.com/owner/repo.git"),
 				}, nil
 			},
-			config: func() (config.Config, error) {
-				return config.InheritEnv(config.NewFromString(heredoc.Doc(`
-				  hosts:
-				    example.com:
-				      oauth_token: GHETOKEN
-				`))), nil
-			},
-			override: "test.com",
-			output:   []string{"upstream", "origin"},
+			config: func() gh.Config {
+				cfg := &ghmock.ConfigMock{}
+				cfg.AuthenticationFunc = func() gh.AuthConfig {
+					authCfg := &config.AuthConfig{}
+					authCfg.SetHosts([]string{"example.com", "test.com"})
+					authCfg.SetDefaultHost("test.com", "GH_HOST")
+					return authCfg
+				}
+				return cfg
+			}(),
+			output: []string{"upstream", "origin"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.override != "" {
-				os.Setenv("GH_HOST", tt.override)
-			}
 			rr := &remoteResolver{
-				readRemotes: tt.remotes,
-				getConfig:   tt.config,
-				urlTranslator: func(u *url.URL) *url.URL {
-					return u
-				},
+				readRemotes:   tt.remotes,
+				getConfig:     func() (gh.Config, error) { return tt.config, nil },
+				urlTranslator: identityTranslator{},
 			}
 			resolver := rr.Resolver()
 			remotes, err := resolver()

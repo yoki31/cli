@@ -2,11 +2,13 @@ package download
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/cli/cli/v2/internal/safepaths"
 )
 
 const (
@@ -15,17 +17,17 @@ const (
 	execMode os.FileMode = 0755
 )
 
-func extractZip(zr *zip.Reader, destDir string) error {
-	destDirAbs, err := filepath.Abs(destDir)
-	if err != nil {
-		return err
-	}
-	pathPrefix := destDirAbs + string(filepath.Separator)
+func extractZip(zr *zip.Reader, destDir safepaths.Absolute) error {
 	for _, zf := range zr.File {
-		fpath := filepath.Join(destDirAbs, filepath.FromSlash(zf.Name))
-		if !strings.HasPrefix(fpath, pathPrefix) {
-			continue
+		fpath, err := destDir.Join(zf.Name)
+		if err != nil {
+			var pathTraversalError safepaths.PathTraversalError
+			if errors.As(err, &pathTraversalError) {
+				continue
+			}
+			return err
 		}
+
 		if err := extractZipFile(zf, fpath); err != nil {
 			return fmt.Errorf("error extracting %q: %w", zf.Name, err)
 		}
@@ -33,32 +35,37 @@ func extractZip(zr *zip.Reader, destDir string) error {
 	return nil
 }
 
-func extractZipFile(zf *zip.File, dest string) error {
+func extractZipFile(zf *zip.File, dest safepaths.Absolute) (extractErr error) {
 	zm := zf.Mode()
 	if zm.IsDir() {
-		return os.MkdirAll(dest, dirMode)
+		extractErr = os.MkdirAll(dest.String(), dirMode)
+		return
 	}
 
-	f, err := zf.Open()
-	if err != nil {
-		return err
+	var f io.ReadCloser
+	f, extractErr = zf.Open()
+	if extractErr != nil {
+		return
 	}
 	defer f.Close()
 
-	if dir := filepath.Dir(dest); dir != "." {
-		if err := os.MkdirAll(dir, dirMode); err != nil {
-			return err
+	if extractErr = os.MkdirAll(filepath.Dir(dest.String()), dirMode); extractErr != nil {
+		return
+	}
+
+	var df *os.File
+	if df, extractErr = os.OpenFile(dest.String(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, getPerm(zm)); extractErr != nil {
+		return
+	}
+
+	defer func() {
+		if err := df.Close(); extractErr == nil && err != nil {
+			extractErr = err
 		}
-	}
+	}()
 
-	df, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, getPerm(zm))
-	if err != nil {
-		return err
-	}
-	defer df.Close()
-
-	_, err = io.Copy(df, f)
-	return err
+	_, extractErr = io.Copy(df, f)
+	return
 }
 
 func getPerm(m os.FileMode) os.FileMode {

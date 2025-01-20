@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,11 +10,12 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/internal/tableprinter"
+	"github.com/cli/cli/v2/internal/text"
 	"github.com/cli/cli/v2/pkg/cmd/release/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/cli/cli/v2/pkg/markdown"
-	"github.com/cli/cli/v2/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -81,15 +83,16 @@ func viewRun(opts *ViewOptions) error {
 		return err
 	}
 
+	ctx := context.Background()
 	var release *shared.Release
 
 	if opts.TagName == "" {
-		release, err = shared.FetchLatestRelease(httpClient, baseRepo)
+		release, err = shared.FetchLatestRelease(ctx, httpClient, baseRepo)
 		if err != nil {
 			return err
 		}
 	} else {
-		release, err = shared.FetchRelease(httpClient, baseRepo, opts.TagName)
+		release, err = shared.FetchRelease(ctx, httpClient, baseRepo, opts.TagName)
 		if err != nil {
 			return err
 		}
@@ -97,7 +100,7 @@ func viewRun(opts *ViewOptions) error {
 
 	if opts.WebMode {
 		if opts.IO.IsStdoutTTY() {
-			fmt.Fprintf(opts.IO.ErrOut, "Opening %s in your browser.\n", utils.DisplayURL(release.URL))
+			fmt.Fprintf(opts.IO.ErrOut, "Opening %s in your browser.\n", text.DisplayURL(release.URL))
 		}
 		return opts.Browser.Browse(release.URL)
 	}
@@ -136,13 +139,14 @@ func renderReleaseTTY(io *iostreams.IOStreams, release *shared.Release) error {
 		fmt.Fprintf(w, "%s • ", iofmt.Yellow("Pre-release"))
 	}
 	if release.IsDraft {
-		fmt.Fprintf(w, "%s\n", iofmt.Gray(fmt.Sprintf("%s created this %s", release.Author.Login, utils.FuzzyAgo(time.Since(release.CreatedAt)))))
+		fmt.Fprintf(w, "%s\n", iofmt.Gray(fmt.Sprintf("%s created this %s", release.Author.Login, text.FuzzyAgo(time.Now(), release.CreatedAt))))
 	} else {
-		fmt.Fprintf(w, "%s\n", iofmt.Gray(fmt.Sprintf("%s released this %s", release.Author.Login, utils.FuzzyAgo(time.Since(*release.PublishedAt)))))
+		fmt.Fprintf(w, "%s\n", iofmt.Gray(fmt.Sprintf("%s released this %s", release.Author.Login, text.FuzzyAgo(time.Now(), *release.PublishedAt))))
 	}
 
-	style := markdown.GetStyle(io.TerminalTheme())
-	renderedDescription, err := markdown.Render(release.Body, style)
+	renderedDescription, err := markdown.Render(release.Body,
+		markdown.WithTheme(io.TerminalTheme()),
+		markdown.WithWrap(io.TerminalWidth()))
 	if err != nil {
 		return err
 	}
@@ -150,10 +154,11 @@ func renderReleaseTTY(io *iostreams.IOStreams, release *shared.Release) error {
 
 	if len(release.Assets) > 0 {
 		fmt.Fprintf(w, "%s\n", iofmt.Bold("Assets"))
-		table := utils.NewTablePrinter(io)
+		//nolint:staticcheck // SA1019: Showing NAME|SIZE headers adds nothing to table.
+		table := tableprinter.New(io, tableprinter.NoHeader)
 		for _, a := range release.Assets {
-			table.AddField(a.Name, nil, nil)
-			table.AddField(humanFileSize(a.Size), nil, nil)
+			table.AddField(a.Name)
+			table.AddField(humanFileSize(a.Size))
 			table.EndRow()
 		}
 		err := table.Render()
@@ -183,6 +188,9 @@ func renderReleasePlain(w io.Writer, release *shared.Release) error {
 	}
 	fmt.Fprint(w, "--\n")
 	fmt.Fprint(w, release.Body)
+	if !strings.HasSuffix(release.Body, "\n") {
+		fmt.Fprintf(w, "\n")
+	}
 	return nil
 }
 

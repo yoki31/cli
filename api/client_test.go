@@ -3,20 +3,25 @@ package api
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/cli/cli/v2/pkg/httpmock"
+	"github.com/cli/cli/v2/pkg/iostreams"
 	"github.com/stretchr/testify/assert"
 )
 
+func newTestClient(reg *httpmock.Registry) *Client {
+	client := &http.Client{}
+	httpmock.ReplaceTripper(client, reg)
+	return NewClientFromHTTP(client)
+}
+
 func TestGraphQL(t *testing.T) {
 	http := &httpmock.Registry{}
-	client := NewClient(
-		ReplaceTripper(http),
-		AddHeader("Authorization", "token OTOKEN"),
-	)
+	client := newTestClient(http)
 
 	vars := map[string]interface{}{"name": "Mona"}
 	response := struct {
@@ -35,40 +40,44 @@ func TestGraphQL(t *testing.T) {
 	assert.Equal(t, "hubot", response.Viewer.Login)
 
 	req := http.Requests[0]
-	reqBody, _ := ioutil.ReadAll(req.Body)
+	reqBody, _ := io.ReadAll(req.Body)
 	assert.Equal(t, `{"query":"QUERY","variables":{"name":"Mona"}}`, string(reqBody))
-	assert.Equal(t, "token OTOKEN", req.Header.Get("Authorization"))
 }
 
 func TestGraphQLError(t *testing.T) {
-	http := &httpmock.Registry{}
-	client := NewClient(ReplaceTripper(http))
+	reg := &httpmock.Registry{}
+	client := newTestClient(reg)
 
 	response := struct{}{}
 
-	http.Register(
+	reg.Register(
 		httpmock.GraphQL(""),
 		httpmock.StringResponse(`
 			{ "errors": [
-				{"message":"OH NO"},
-				{"message":"this is fine"}
+				{
+					"type": "NOT_FOUND",
+					"message": "OH NO",
+					"path": ["repository", "issue"]
+				},
+				{
+					"type": "ACTUALLY_ITS_FINE",
+					"message": "this is fine",
+					"path": ["repository", "issues", 0, "comments"]
+				}
 			  ]
 			}
 		`),
 	)
 
 	err := client.GraphQL("github.com", "", nil, &response)
-	if err == nil || err.Error() != "GraphQL error: OH NO\nthis is fine" {
+	if err == nil || err.Error() != "GraphQL: OH NO (repository.issue), this is fine (repository.issues.0.comments)" {
 		t.Fatalf("got %q", err.Error())
 	}
 }
 
 func TestRESTGetDelete(t *testing.T) {
 	http := &httpmock.Registry{}
-
-	client := NewClient(
-		ReplaceTripper(http),
-	)
+	client := newTestClient(http)
 
 	http.Register(
 		httpmock.REST("DELETE", "applications/CLIENTID/grant"),
@@ -82,7 +91,7 @@ func TestRESTGetDelete(t *testing.T) {
 
 func TestRESTWithFullURL(t *testing.T) {
 	http := &httpmock.Registry{}
-	client := NewClient(ReplaceTripper(http))
+	client := newTestClient(http)
 
 	http.Register(
 		httpmock.REST("GET", "api/v3/user/repos"),
@@ -102,13 +111,13 @@ func TestRESTWithFullURL(t *testing.T) {
 
 func TestRESTError(t *testing.T) {
 	fakehttp := &httpmock.Registry{}
-	client := NewClient(ReplaceTripper(fakehttp))
+	client := newTestClient(fakehttp)
 
 	fakehttp.Register(httpmock.MatchAny, func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			Request:    req,
 			StatusCode: 422,
-			Body:       ioutil.NopCloser(bytes.NewBufferString(`{"message": "OH NO"}`)),
+			Body:       io.NopCloser(bytes.NewBufferString(`{"message": "OH NO"}`)),
 			Header: map[string][]string{
 				"Content-Type": {"application/json; charset=utf-8"},
 			},
@@ -126,7 +135,6 @@ func TestRESTError(t *testing.T) {
 	}
 	if httpErr.Error() != "HTTP 422: OH NO (https://api.github.com/repos/branch)" {
 		t.Errorf("got %q", httpErr.Error())
-
 	}
 }
 
@@ -138,7 +146,7 @@ func TestHandleHTTPError_GraphQL502(t *testing.T) {
 	resp := &http.Response{
 		Request:    req,
 		StatusCode: 502,
-		Body:       ioutil.NopCloser(bytes.NewBufferString(`{ "data": null, "errors": [{ "message": "Something went wrong" }] }`)),
+		Body:       io.NopCloser(bytes.NewBufferString(`{ "data": null, "errors": [{ "message": "Something went wrong" }] }`)),
 		Header:     map[string][]string{"Content-Type": {"application/json"}},
 	}
 	err = HandleHTTPError(resp)
@@ -156,7 +164,7 @@ func TestHTTPError_ScopesSuggestion(t *testing.T) {
 		return &http.Response{
 			Request:    req,
 			StatusCode: s,
-			Body:       ioutil.NopCloser(bytes.NewBufferString(`{}`)),
+			Body:       io.NopCloser(bytes.NewBufferString(`{}`)),
 			Header: map[string][]string{
 				"Content-Type":            {"application/json"},
 				"X-Oauth-Scopes":          {haveScopes},
@@ -200,6 +208,11 @@ func TestHTTPError_ScopesSuggestion(t *testing.T) {
 			resp: makeResponse(404, "https://api.github.com/gists", "", "gist, delete_repo"),
 			want: ``,
 		},
+		{
+			name: "http code is 422",
+			resp: makeResponse(422, "https://api.github.com/gists", "", "gist"),
+			want: "",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,4 +222,36 @@ func TestHTTPError_ScopesSuggestion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHTTPHeaders(t *testing.T) {
+	var gotReq *http.Request
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReq = r
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	ios, _, _, stderr := iostreams.Test()
+	httpClient, err := NewHTTPClient(HTTPClientOptions{
+		AppVersion: "v1.2.3",
+		Config:     tinyConfig{ts.URL[7:] + ":oauth_token": "MYTOKEN"},
+		Log:        ios.ErrOut,
+	})
+	assert.NoError(t, err)
+	client := NewClientFromHTTP(httpClient)
+
+	err = client.REST(ts.URL, "GET", ts.URL+"/user/repos", nil, nil)
+	assert.NoError(t, err)
+
+	wantHeader := map[string]string{
+		"Accept":        "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+		"Authorization": "token MYTOKEN",
+		"Content-Type":  "application/json; charset=utf-8",
+		"User-Agent":    "GitHub CLI v1.2.3",
+	}
+	for name, value := range wantHeader {
+		assert.Equal(t, value, gotReq.Header.Get(name), name)
+	}
+	assert.Equal(t, "", stderr.String())
 }

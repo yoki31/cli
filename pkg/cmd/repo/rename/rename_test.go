@@ -8,12 +8,13 @@ import (
 	"github.com/cli/cli/v2/context"
 	"github.com/cli/cli/v2/git"
 	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
+	"github.com/cli/cli/v2/internal/prompter"
 	"github.com/cli/cli/v2/internal/run"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
-	"github.com/cli/cli/v2/pkg/prompt"
 	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
 )
@@ -35,7 +36,7 @@ func TestNewCmdRename(t *testing.T) {
 		},
 		{
 			name:  "one argument no tty confirmed",
-			input: "REPO --confirm",
+			input: "REPO --yes",
 			output: RenameOptions{
 				newRepoSelector: "REPO",
 			},
@@ -43,12 +44,12 @@ func TestNewCmdRename(t *testing.T) {
 		{
 			name:    "one argument no tty",
 			input:   "REPO",
-			errMsg:  "--confirm required when passing a single argument",
+			errMsg:  "--yes required when passing a single argument",
 			wantErr: true,
 		},
 		{
 			name:  "one argument tty confirmed",
-			input: "REPO --confirm",
+			input: "REPO --yes",
 			tty:   true,
 			output: RenameOptions{
 				newRepoSelector: "REPO",
@@ -73,11 +74,11 @@ func TestNewCmdRename(t *testing.T) {
 	}
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			io, _, _, _ := iostreams.Test()
-			io.SetStdinTTY(tt.tty)
-			io.SetStdoutTTY(tt.tty)
+			ios, _, _, _ := iostreams.Test()
+			ios.SetStdinTTY(tt.tty)
+			ios.SetStdoutTTY(tt.tty)
 			f := &cmdutil.Factory{
-				IOStreams: io,
+				IOStreams: ios,
 			}
 
 			argv, err := shlex.Split(tt.input)
@@ -105,24 +106,26 @@ func TestNewCmdRename(t *testing.T) {
 
 func TestRenameRun(t *testing.T) {
 	testCases := []struct {
-		name      string
-		opts      RenameOptions
-		httpStubs func(*httpmock.Registry)
-		execStubs func(*run.CommandStubber)
-		askStubs  func(*prompt.AskStubber)
-		wantOut   string
-		tty       bool
+		name        string
+		opts        RenameOptions
+		httpStubs   func(*httpmock.Registry)
+		execStubs   func(*run.CommandStubber)
+		promptStubs func(*prompter.MockPrompter)
+		wantOut     string
+		tty         bool
 	}{
 		{
 			name:    "none argument",
 			wantOut: "✓ Renamed repository OWNER/NEW_REPO\n✓ Updated the \"origin\" remote\n",
-			askStubs: func(q *prompt.AskStubber) {
-				q.StubOne("NEW_REPO")
+			promptStubs: func(pm *prompter.MockPrompter) {
+				pm.RegisterInput("Rename OWNER/REPO to:", func(_, _ string) (string, error) {
+					return "NEW_REPO", nil
+				})
 			},
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.REST("PATCH", "repos/OWNER/REPO"),
-					httpmock.StatusStringResponse(204, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
+					httpmock.StatusStringResponse(200, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
 			},
 			execStubs: func(cs *run.CommandStubber) {
 				cs.Register(`git remote set-url origin https://github.com/OWNER/NEW_REPO.git`, 0, "")
@@ -135,13 +138,15 @@ func TestRenameRun(t *testing.T) {
 				HasRepoOverride: true,
 			},
 			wantOut: "✓ Renamed repository OWNER/NEW_REPO\n",
-			askStubs: func(q *prompt.AskStubber) {
-				q.StubOne("NEW_REPO")
+			promptStubs: func(pm *prompter.MockPrompter) {
+				pm.RegisterInput("Rename OWNER/REPO to:", func(_, _ string) (string, error) {
+					return "NEW_REPO", nil
+				})
 			},
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.REST("PATCH", "repos/OWNER/REPO"),
-					httpmock.StatusStringResponse(204, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
+					httpmock.StatusStringResponse(200, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
 			},
 			tty: true,
 		},
@@ -154,7 +159,7 @@ func TestRenameRun(t *testing.T) {
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.REST("PATCH", "repos/OWNER/REPO"),
-					httpmock.StatusStringResponse(204, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
+					httpmock.StatusStringResponse(200, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
 			},
 			execStubs: func(cs *run.CommandStubber) {
 				cs.Register(`git remote set-url origin https://github.com/OWNER/NEW_REPO.git`, 0, "")
@@ -169,7 +174,7 @@ func TestRenameRun(t *testing.T) {
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.REST("PATCH", "repos/OWNER/REPO"),
-					httpmock.StatusStringResponse(204, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
+					httpmock.StatusStringResponse(200, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
 			},
 			execStubs: func(cs *run.CommandStubber) {
 				cs.Register(`git remote set-url origin https://github.com/OWNER/NEW_REPO.git`, 0, "")
@@ -183,13 +188,15 @@ func TestRenameRun(t *testing.T) {
 				DoConfirm:       true,
 			},
 			wantOut: "✓ Renamed repository OWNER/NEW_REPO\n✓ Updated the \"origin\" remote\n",
-			askStubs: func(q *prompt.AskStubber) {
-				q.StubOne(true)
+			promptStubs: func(pm *prompter.MockPrompter) {
+				pm.RegisterConfirm("Rename OWNER/REPO to NEW_REPO?", func(_ string, _ bool) (bool, error) {
+					return true, nil
+				})
 			},
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.REST("PATCH", "repos/OWNER/REPO"),
-					httpmock.StatusStringResponse(204, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
+					httpmock.StatusStringResponse(200, `{"name":"NEW_REPO","owner":{"login":"OWNER"}}`))
 			},
 			execStubs: func(cs *run.CommandStubber) {
 				cs.Register(`git remote set-url origin https://github.com/OWNER/NEW_REPO.git`, 0, "")
@@ -203,18 +210,20 @@ func TestRenameRun(t *testing.T) {
 				newRepoSelector: "NEW_REPO",
 				DoConfirm:       true,
 			},
-			askStubs: func(q *prompt.AskStubber) {
-				q.StubOne(false)
+			promptStubs: func(pm *prompter.MockPrompter) {
+				pm.RegisterConfirm("Rename OWNER/REPO to NEW_REPO?", func(_ string, _ bool) (bool, error) {
+					return false, nil
+				})
 			},
 			wantOut: "",
 		},
 	}
 
 	for _, tt := range testCases {
-		q, teardown := prompt.InitAskStubber()
-		defer teardown()
-		if tt.askStubs != nil {
-			tt.askStubs(q)
+		pm := prompter.NewMockPrompter(t)
+		tt.opts.Prompter = pm
+		if tt.promptStubs != nil {
+			tt.promptStubs(pm)
 		}
 
 		repo, _ := ghrepo.FromFullName("OWNER/REPO")
@@ -222,7 +231,7 @@ func TestRenameRun(t *testing.T) {
 			return repo, nil
 		}
 
-		tt.opts.Config = func() (config.Config, error) {
+		tt.opts.Config = func() (gh.Config, error) {
 			return config.NewBlankConfig(), nil
 		}
 
@@ -249,10 +258,12 @@ func TestRenameRun(t *testing.T) {
 			return &http.Client{Transport: reg}, nil
 		}
 
-		io, _, stdout, _ := iostreams.Test()
-		io.SetStdinTTY(tt.tty)
-		io.SetStdoutTTY(tt.tty)
-		tt.opts.IO = io
+		ios, _, stdout, _ := iostreams.Test()
+		ios.SetStdinTTY(tt.tty)
+		ios.SetStdoutTTY(tt.tty)
+		tt.opts.IO = ios
+
+		tt.opts.GitClient = &git.Client{GitPath: "some/path/git"}
 
 		t.Run(tt.name, func(t *testing.T) {
 			defer reg.Verify(t)

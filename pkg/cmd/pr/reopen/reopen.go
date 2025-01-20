@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/cli/cli/v2/api"
+	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -18,6 +19,7 @@ type ReopenOptions struct {
 	Finder shared.PRFinder
 
 	SelectorArg string
+	Comment     string
 }
 
 func NewCmdReopen(f *cmdutil.Factory, runF func(*ReopenOptions) error) *cobra.Command {
@@ -44,6 +46,8 @@ func NewCmdReopen(f *cmdutil.Factory, runF func(*ReopenOptions) error) *cobra.Co
 		},
 	}
 
+	cmd.Flags().StringVarP(&opts.Comment, "comment", "c", "", "Add a reopening comment")
+
 	return cmd
 }
 
@@ -60,12 +64,12 @@ func reopenRun(opts *ReopenOptions) error {
 	}
 
 	if pr.State == "MERGED" {
-		fmt.Fprintf(opts.IO.ErrOut, "%s Pull request #%d (%s) can't be reopened because it was already merged\n", cs.FailureIcon(), pr.Number, pr.Title)
+		fmt.Fprintf(opts.IO.ErrOut, "%s Pull request %s#%d (%s) can't be reopened because it was already merged\n", cs.FailureIcon(), ghrepo.FullName(baseRepo), pr.Number, pr.Title)
 		return cmdutil.SilentError
 	}
 
 	if pr.IsOpen() {
-		fmt.Fprintf(opts.IO.ErrOut, "%s Pull request #%d (%s) is already open\n", cs.WarningIcon(), pr.Number, pr.Title)
+		fmt.Fprintf(opts.IO.ErrOut, "%s Pull request %s#%d (%s) is already open\n", cs.WarningIcon(), ghrepo.FullName(baseRepo), pr.Number, pr.Title)
 		return nil
 	}
 
@@ -73,14 +77,29 @@ func reopenRun(opts *ReopenOptions) error {
 	if err != nil {
 		return err
 	}
-	apiClient := api.NewClientFromHTTP(httpClient)
 
-	err = api.PullRequestReopen(apiClient, baseRepo, pr)
+	if opts.Comment != "" {
+		commentOpts := &shared.CommentableOptions{
+			Body:       opts.Comment,
+			HttpClient: opts.HttpClient,
+			InputType:  shared.InputTypeInline,
+			Quiet:      true,
+			RetrieveCommentable: func() (shared.Commentable, ghrepo.Interface, error) {
+				return pr, baseRepo, nil
+			},
+		}
+		err := shared.CommentableRun(commentOpts)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = api.PullRequestReopen(httpClient, baseRepo, pr.ID)
 	if err != nil {
 		return fmt.Errorf("API call failed: %w", err)
 	}
 
-	fmt.Fprintf(opts.IO.ErrOut, "%s Reopened pull request #%d (%s)\n", cs.SuccessIconWithColor(cs.Green), pr.Number, pr.Title)
+	fmt.Fprintf(opts.IO.ErrOut, "%s Reopened pull request %s#%d (%s)\n", cs.SuccessIconWithColor(cs.Green), ghrepo.FullName(baseRepo), pr.Number, pr.Title)
 
 	return nil
 }

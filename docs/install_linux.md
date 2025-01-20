@@ -14,13 +14,15 @@ our release schedule.
 Install:
 
 ```bash
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-sudo apt update
-sudo apt install gh
+(type -p wget >/dev/null || (sudo apt update && sudo apt-get install wget -y)) \
+	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
+        && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+	&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+	&& sudo apt update \
+	&& sudo apt install gh -y
 ```
-
-**Note**: If you get the error _"gpg: failed to start the dirmngr '/usr/bin/dirmngr': No such file or directory"_, try installing the `dirmngr` package: `sudo apt install dirmngr`.
 
 Upgrade:
 
@@ -29,12 +31,45 @@ sudo apt update
 sudo apt install gh
 ```
 
-### Fedora, CentOS, Red Hat Enterprise Linux (dnf)
+> [!NOTE]
+> If errors regarding GPG signatures occur, see [cli/cli#9569](https://github.com/cli/cli/issues/9569) for steps to fix this.
 
-Install:
+### Fedora, CentOS, Red Hat Enterprise Linux (DNF4 & DNF5)
+
+Install from our package repository for immediate access to latest releases.
+
+#### DNF5
+
+> [!IMPORTANT]
+> **These commands apply to DNF5 only**. If you're using DNF4, please use [the DNF4 instructions](#dnf4).
 
 ```bash
+# DNF5 installation commands
+sudo dnf install dnf5-plugins
+sudo dnf config-manager addrepo --from-repofile=https://cli.github.com/packages/rpm/gh-cli.repo
+sudo dnf install gh --repo gh-cli
+```
+
+#### DNF4
+
+> [!IMPORTANT]
+> **These commands apply to DNF4 only**. If you're using DNF5, please use [the DNF5 instructions](#dnf5).
+
+```bash
+# DNF4 installation commands
+sudo dnf install 'dnf-command(config-manager)'
 sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+sudo dnf install gh --repo gh-cli
+```
+
+> [!NOTE]
+> If errors regarding GPG signatures occur, see [cli/cli#9569](https://github.com/cli/cli/issues/9569) for steps to fix this.
+
+### Fedora, CentOS, Red Hat Enterprise Linux - Community repository
+
+Alternatively, install from the [community repository](https://packages.fedoraproject.org/pkgs/gh/gh/):
+
+```bash
 sudo dnf install gh
 ```
 
@@ -43,6 +78,25 @@ Upgrade:
 ```bash
 sudo dnf update gh
 ```
+
+### Amazon Linux 2 (yum)
+
+Install using our package repository for immediate access to latest releases:
+
+```bash
+type -p yum-config-manager >/dev/null || sudo yum install yum-utils
+sudo yum-config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+sudo yum install gh
+```
+
+Upgrade:
+
+```bash
+sudo yum update gh
+```
+
+> [!NOTE]
+> If errors regarding GPG signatures occur, see [cli/cli#9569](https://github.com/cli/cli/issues/9569) for steps to fix this.
 
 ### openSUSE/SUSE Linux (zypper)
 
@@ -61,6 +115,9 @@ sudo zypper ref
 sudo zypper update gh
 ```
 
+> [!NOTE]
+> If errors regarding GPG signatures occur, see [cli/cli#9569](https://github.com/cli/cli/issues/9569) for steps to fix this.
+
 ## Manual installation
 
 * [Download release binaries][releases page] that match your platform; or
@@ -76,7 +133,7 @@ There are [so many issues with Snap](https://github.com/casperdcl/cli/issues/7) 
 
 ### Arch Linux
 
-Arch Linux users can install from the [community repo][arch linux repo]:
+Arch Linux users can install from the [extra repo][arch linux repo]:
 
 ```bash
 sudo pacman -S github-cli
@@ -104,6 +161,20 @@ Or via [pkg(8)](https://www.freebsd.org/cgi/man.cgi?pkg(8)):
 
 ```bash
 pkg install gh
+```
+
+### NetBSD/pkgsrc
+
+NetBSD users and those on [platforms supported by pkgsrc](https://pkgsrc.org/#index4h1) can install the [gh package](https://pkgsrc.se/net/gh):
+
+```bash
+pkgin install gh
+```
+
+To install from source:
+
+```bash
+cd /usr/pkgsrc/net/gh && make package-install
 ```
 
 ### OpenBSD
@@ -154,11 +225,25 @@ kiss b github-cli && kiss i github-cli
 
 ### Nix/NixOS
 
-Nix/NixOS users can install from [nixpkgs](https://search.nixos.org/packages?show=gitAndTools.gh&query=gh&from=0&size=30&sort=relevance&channel=20.03#disabled):
+Nix/NixOS users can install from [nixpkgs](https://search.nixos.org/packages?query=gh&sort=relevance&show=gh):
 
 ```bash
-nix-env -iA nixos.gitAndTools.gh
+nix-env -iA nixos.gh
 ```
+
+### Flox
+
+Flox users can install from the [official community nixpkgs](https://github.com/flox/nixpkgs).
+
+```bash
+# To install
+flox install gh
+
+# To upgrade
+flox upgrade toplevel
+```
+
+For more information about Flox, see [its homepage](https://flox.dev).
 
 ### openSUSE Tumbleweed
 
@@ -167,6 +252,30 @@ openSUSE Tumbleweed users can install from the [official distribution repo](http
 sudo zypper in gh
 ```
 
+### Alpine Linux
+
+Alpine Linux users can install from the [stable releases' community package repository](https://pkgs.alpinelinux.org/packages?name=github-cli&branch=v3.15).
+
+```bash
+apk add github-cli
+```
+
+Users wanting the latest version of the CLI without waiting to be backported into the stable release they're using should use the edge release's
+community repo through this method below, without mixing packages from stable and unstable repos.[^1]
+
+```bash
+echo "@community http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+apk add github-cli@community
+```
+
+### Void Linux
+Void Linux users can install from the [official distribution repo](https://voidlinux.org/packages/?arch=x86_64&q=github-cli):
+
+```bash
+sudo xbps-install github-cli
+```
+
 [releases page]: https://github.com/cli/cli/releases/latest
-[arch linux repo]: https://www.archlinux.org/packages/community/x86_64/github-cli
+[arch linux repo]: https://www.archlinux.org/packages/extra/x86_64/github-cli
 [arch linux aur]: https://aur.archlinux.org/packages/github-cli-git
+[^1]: https://wiki.alpinelinux.org/wiki/Package_management#Repository_pinning

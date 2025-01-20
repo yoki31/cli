@@ -6,27 +6,22 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cli/cli/v2/internal/safepaths"
 	"github.com/stretchr/testify/require"
 )
 
 func Test_extractZip(t *testing.T) {
 	tmpDir := t.TempDir()
-	wd, err := os.Getwd()
+	extractPath, err := safepaths.ParseAbsolute(filepath.Join(tmpDir, "artifact"))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.Chdir(wd) })
 
 	zipFile, err := zip.OpenReader("./fixtures/myproject.zip")
 	require.NoError(t, err)
 	defer zipFile.Close()
 
-	extractPath := filepath.Join(tmpDir, "artifact")
-	err = os.MkdirAll(extractPath, 0700)
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(extractPath))
-
-	err = extractZip(&zipFile.Reader, ".")
+	err = extractZip(&zipFile.Reader, extractPath)
 	require.NoError(t, err)
 
-	_, err = os.Stat(filepath.Join("src", "main.go"))
+	_, err = os.Stat(filepath.Join(extractPath.String(), "src", "main.go"))
 	require.NoError(t, err)
 }

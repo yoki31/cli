@@ -2,12 +2,14 @@ package browse
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/cli/cli/v2/git"
+	"github.com/cli/cli/v2/internal/browser"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
@@ -42,6 +44,14 @@ func TestNewCmdBrowse(t *testing.T) {
 			cli:  "--projects",
 			wants: BrowseOptions{
 				ProjectsFlag: true,
+			},
+			wantsErr: false,
+		},
+		{
+			name: "releases flag",
+			cli:  "--releases",
+			wants: BrowseOptions{
+				ReleasesFlag: true,
 			},
 			wantsErr: false,
 		},
@@ -106,12 +116,74 @@ func TestNewCmdBrowse(t *testing.T) {
 			wantsErr: true,
 		},
 		{
-			name: "last commit flag",
-			cli:  "-c",
+			name:     "passed argument and projects flag",
+			cli:      "main.go --projects",
+			wantsErr: true,
+		},
+		{
+			name:     "passed argument and releases flag",
+			cli:      "main.go --releases",
+			wantsErr: true,
+		},
+		{
+			name:     "passed argument and settings flag",
+			cli:      "main.go --settings",
+			wantsErr: true,
+		},
+		{
+			name:     "passed argument and wiki flag",
+			cli:      "main.go --wiki",
+			wantsErr: true,
+		},
+		{
+			name: "empty commit flag",
+			cli:  "--commit",
 			wants: BrowseOptions{
-				CommitFlag: true,
+				Commit: emptyCommitFlag,
 			},
 			wantsErr: false,
+		},
+		{
+			name: "commit flag with a hash",
+			cli:  "--commit=12a4",
+			wants: BrowseOptions{
+				Commit: "12a4",
+			},
+			wantsErr: false,
+		},
+		{
+			name: "commit flag with a hash and a file selector",
+			cli:  "main.go --commit=12a4",
+			wants: BrowseOptions{
+				Commit:      "12a4",
+				SelectorArg: "main.go",
+			},
+			wantsErr: false,
+		},
+		{
+			name:     "passed both branch and commit flags",
+			cli:      "main.go --branch main --commit=12a4",
+			wantsErr: true,
+		},
+		{
+			name:     "passed both number arg and branch flag",
+			cli:      "1 --branch trunk",
+			wantsErr: true,
+		},
+		{
+			name:     "passed both number arg and commit flag",
+			cli:      "1 --commit=12a4",
+			wantsErr: true,
+		},
+		{
+			name:     "passed both commit SHA arg and branch flag",
+			cli:      "de07febc26e19000f8c9e821207f3bc34a3c8038 --branch trunk",
+			wantsErr: true,
+		},
+		{
+			name:     "passed both commit SHA arg and commit flag",
+			cli:      "de07febc26e19000f8c9e821207f3bc34a3c8038 --commit=12a4",
+			wantsErr: true,
 		},
 	}
 	for _, tt := range tests {
@@ -125,6 +197,8 @@ func TestNewCmdBrowse(t *testing.T) {
 			argv, err := shlex.Split(tt.cli)
 			assert.NoError(t, err)
 			cmd.SetArgs(argv)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
 			_, err = cmd.ExecuteC()
 
 			if tt.wantsErr {
@@ -137,28 +211,28 @@ func TestNewCmdBrowse(t *testing.T) {
 			assert.Equal(t, tt.wants.Branch, opts.Branch)
 			assert.Equal(t, tt.wants.SelectorArg, opts.SelectorArg)
 			assert.Equal(t, tt.wants.ProjectsFlag, opts.ProjectsFlag)
+			assert.Equal(t, tt.wants.ReleasesFlag, opts.ReleasesFlag)
 			assert.Equal(t, tt.wants.WikiFlag, opts.WikiFlag)
 			assert.Equal(t, tt.wants.NoBrowserFlag, opts.NoBrowserFlag)
 			assert.Equal(t, tt.wants.SettingsFlag, opts.SettingsFlag)
+			assert.Equal(t, tt.wants.Commit, opts.Commit)
 		})
 	}
 }
 
-func setGitDir(t *testing.T, dir string) {
-	// taken from git_test.go
-	old_GIT_DIR := os.Getenv("GIT_DIR")
-	os.Setenv("GIT_DIR", dir)
-	t.Cleanup(func() {
-		os.Setenv("GIT_DIR", old_GIT_DIR)
-	})
+type testGitClient struct{}
+
+func (gc *testGitClient) LastCommit() (*git.Commit, error) {
+	return &git.Commit{Sha: "6f1a2405cace1633d89a79c74c65f22fe78f9659"}, nil
 }
 
 func Test_runBrowse(t *testing.T) {
 	s := string(os.PathSeparator)
-	setGitDir(t, "../../../git/fixtures/simple.git")
+	t.Setenv("GIT_DIR", "../../../git/fixtures/simple.git")
 	tests := []struct {
 		name          string
 		opts          BrowseOptions
+		httpStub      func(*httpmock.Registry)
 		baseRepo      ghrepo.Interface
 		defaultBranch string
 		expectedURL   string
@@ -189,6 +263,14 @@ func Test_runBrowse(t *testing.T) {
 			expectedURL: "https://github.com/ttran112/7ate9/projects",
 		},
 		{
+			name: "releases flag",
+			opts: BrowseOptions{
+				ReleasesFlag: true,
+			},
+			baseRepo:    ghrepo.New("ttran112", "7ate9"),
+			expectedURL: "https://github.com/ttran112/7ate9/releases",
+		},
+		{
 			name: "wiki flag",
 			opts: BrowseOptions{
 				WikiFlag: true,
@@ -212,12 +294,20 @@ func Test_runBrowse(t *testing.T) {
 			expectedURL: "https://github.com/kevin/MinTy/issues/217",
 		},
 		{
+			name: "issue with hashtag argument",
+			opts: BrowseOptions{
+				SelectorArg: "#217",
+			},
+			baseRepo:    ghrepo.New("kevin", "MinTy"),
+			expectedURL: "https://github.com/kevin/MinTy/issues/217",
+		},
+		{
 			name: "branch flag",
 			opts: BrowseOptions{
 				Branch: "trunk",
 			},
 			baseRepo:    ghrepo.New("jlsestak", "CouldNotThinkOfARepoName"),
-			expectedURL: "https://github.com/jlsestak/CouldNotThinkOfARepoName/tree/trunk/",
+			expectedURL: "https://github.com/jlsestak/CouldNotThinkOfARepoName/tree/trunk",
 		},
 		{
 			name: "branch flag with file",
@@ -235,7 +325,7 @@ func Test_runBrowse(t *testing.T) {
 				PathFromRepoRoot: func() string { return "pkg/dir" },
 			},
 			baseRepo:    ghrepo.New("bstnc", "yeepers"),
-			expectedURL: "https://github.com/bstnc/yeepers/tree/feature-123/",
+			expectedURL: "https://github.com/bstnc/yeepers/tree/feature-123",
 		},
 		{
 			name: "branch flag within dir with .",
@@ -280,7 +370,7 @@ func Test_runBrowse(t *testing.T) {
 			opts: BrowseOptions{
 				SelectorArg: "chocolate-pecan-pie.txt",
 			},
-			baseRepo:      ghrepo.New("andrewhsu", "recipies"),
+			baseRepo:      ghrepo.New("andrewhsu", "recipes"),
 			defaultBranch: "",
 			wantsErr:      true,
 		},
@@ -324,7 +414,7 @@ func Test_runBrowse(t *testing.T) {
 			},
 			baseRepo:    ghrepo.New("ken", "grc"),
 			wantsErr:    false,
-			expectedURL: "https://github.com/ken/grc/issues/217",
+			expectedURL: "https://github.com/ken/grc/tree/trunk/217",
 		},
 		{
 			name: "opening branch file with line number",
@@ -343,6 +433,12 @@ func Test_runBrowse(t *testing.T) {
 				SelectorArg:   "init.rb:6",
 				NoBrowserFlag: true,
 			},
+			httpStub: func(r *httpmock.Registry) {
+				r.Register(
+					httpmock.REST("HEAD", "repos/mislav/will_paginate"),
+					httpmock.StringResponse("{}"),
+				)
+			},
 			baseRepo:    ghrepo.New("mislav", "will_paginate"),
 			wantsErr:    false,
 			expectedURL: "https://github.com/mislav/will_paginate/blob/3-0-stable/init.rb?plain=1#L6",
@@ -350,21 +446,44 @@ func Test_runBrowse(t *testing.T) {
 		{
 			name: "open last commit",
 			opts: BrowseOptions{
-				CommitFlag: true,
+				Commit:    emptyCommitFlag,
+				GitClient: &testGitClient{},
 			},
 			baseRepo:    ghrepo.New("vilmibm", "gh-user-status"),
 			wantsErr:    false,
-			expectedURL: "https://github.com/vilmibm/gh-user-status/tree/6f1a2405cace1633d89a79c74c65f22fe78f9659/",
+			expectedURL: "https://github.com/vilmibm/gh-user-status/tree/6f1a2405cace1633d89a79c74c65f22fe78f9659",
 		},
 		{
 			name: "open last commit with a file",
 			opts: BrowseOptions{
-				CommitFlag:  true,
+				Commit:      emptyCommitFlag,
 				SelectorArg: "main.go",
+				GitClient:   &testGitClient{},
 			},
 			baseRepo:    ghrepo.New("vilmibm", "gh-user-status"),
 			wantsErr:    false,
 			expectedURL: "https://github.com/vilmibm/gh-user-status/tree/6f1a2405cace1633d89a79c74c65f22fe78f9659/main.go",
+		},
+		{
+			name: "open number only commit hash",
+			opts: BrowseOptions{
+				Commit:    "1234567890",
+				GitClient: &testGitClient{},
+			},
+			baseRepo:    ghrepo.New("yanskun", "ILoveGitHub"),
+			wantsErr:    false,
+			expectedURL: "https://github.com/yanskun/ILoveGitHub/tree/1234567890",
+		},
+		{
+			name: "open file with the repository state at a commit hash",
+			opts: BrowseOptions{
+				Commit:      "12a4",
+				SelectorArg: "main.go",
+				GitClient:   &testGitClient{},
+			},
+			baseRepo:    ghrepo.New("yanskun", "ILoveGitHub"),
+			wantsErr:    false,
+			expectedURL: "https://github.com/yanskun/ILoveGitHub/tree/12a4/main.go",
 		},
 		{
 			name: "relative path from browse_test.go",
@@ -392,12 +511,65 @@ func Test_runBrowse(t *testing.T) {
 			expectedURL:   "https://github.com/bchadwic/gh-graph/tree/trunk/pkg/cmd/pr",
 			wantsErr:      false,
 		},
+		{
+			name: "does not use relative path when has repo override",
+			opts: BrowseOptions{
+				SelectorArg:     "README.md",
+				HasRepoOverride: true,
+				PathFromRepoRoot: func() string {
+					return "pkg/cmd/browse/"
+				},
+			},
+			baseRepo:      ghrepo.New("bchadwic", "gh-graph"),
+			defaultBranch: "trunk",
+			expectedURL:   "https://github.com/bchadwic/gh-graph/tree/trunk/README.md",
+			wantsErr:      false,
+		},
+		{
+			name: "use special characters in selector arg",
+			opts: BrowseOptions{
+				SelectorArg: "?=hello world/ *:23-44",
+				Branch:      "branch/with spaces?",
+			},
+			baseRepo:    ghrepo.New("bchadwic", "test"),
+			expectedURL: "https://github.com/bchadwic/test/blob/branch/with%20spaces%3F/%3F=hello%20world/%20%2A?plain=1#L23-L44",
+			wantsErr:    false,
+		},
+		{
+			name: "commit hash in selector arg",
+			opts: BrowseOptions{
+				SelectorArg: "77507cd94ccafcf568f8560cfecde965fcfa63e7",
+			},
+			baseRepo:    ghrepo.New("bchadwic", "test"),
+			expectedURL: "https://github.com/bchadwic/test/commit/77507cd94ccafcf568f8560cfecde965fcfa63e7",
+			wantsErr:    false,
+		},
+		{
+			name: "short commit hash in selector arg",
+			opts: BrowseOptions{
+				SelectorArg: "6e3689d5",
+			},
+			baseRepo:    ghrepo.New("bchadwic", "test"),
+			expectedURL: "https://github.com/bchadwic/test/commit/6e3689d5",
+			wantsErr:    false,
+		},
+
+		{
+			name: "commit hash with extension",
+			opts: BrowseOptions{
+				SelectorArg: "77507cd94ccafcf568f8560cfecde965fcfa63e7.txt",
+				Branch:      "trunk",
+			},
+			baseRepo:    ghrepo.New("bchadwic", "test"),
+			expectedURL: "https://github.com/bchadwic/test/tree/trunk/77507cd94ccafcf568f8560cfecde965fcfa63e7.txt",
+			wantsErr:    false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			io, _, stdout, stderr := iostreams.Test()
-			browser := cmdutil.TestBrowser{}
+			ios, _, stdout, stderr := iostreams.Test()
+			browser := browser.Stub{}
 
 			reg := httpmock.Registry{}
 			defer reg.Verify(t)
@@ -405,8 +577,12 @@ func Test_runBrowse(t *testing.T) {
 				reg.StubRepoInfoResponse(tt.baseRepo.RepoOwner(), tt.baseRepo.RepoName(), tt.defaultBranch)
 			}
 
+			if tt.httpStub != nil {
+				tt.httpStub(&reg)
+			}
+
 			opts := tt.opts
-			opts.IO = io
+			opts.IO = ios
 			opts.BaseRepo = func() (ghrepo.Interface, error) {
 				return tt.baseRepo, nil
 			}
@@ -415,7 +591,7 @@ func Test_runBrowse(t *testing.T) {
 			}
 			opts.Browser = &browser
 			if opts.PathFromRepoRoot == nil {
-				opts.PathFromRepoRoot = git.PathFromRepoRoot
+				opts.PathFromRepoRoot = func() string { return "" }
 			}
 
 			err := runBrowse(&opts)
@@ -439,60 +615,88 @@ func Test_runBrowse(t *testing.T) {
 }
 
 func Test_parsePathFromFileArg(t *testing.T) {
-	s := string(os.PathSeparator)
 	tests := []struct {
 		name         string
+		currentDir   string
 		fileArg      string
 		expectedPath string
 	}{
 		{
+			name:         "empty paths",
+			currentDir:   "",
+			fileArg:      "",
+			expectedPath: "",
+		},
+		{
+			name:         "root directory",
+			currentDir:   "",
+			fileArg:      ".",
+			expectedPath: "",
+		},
+		{
+			name:         "relative path",
+			currentDir:   "",
+			fileArg:      filepath.FromSlash("foo/bar.py"),
+			expectedPath: "foo/bar.py",
+		},
+		{
 			name:         "go to parent folder",
-			fileArg:      ".." + s,
+			currentDir:   "pkg/cmd/browse/",
+			fileArg:      filepath.FromSlash("../"),
 			expectedPath: "pkg/cmd",
 		},
 		{
 			name:         "current folder",
+			currentDir:   "pkg/cmd/browse/",
 			fileArg:      ".",
 			expectedPath: "pkg/cmd/browse",
 		},
 		{
 			name:         "current folder (alternative)",
-			fileArg:      "." + s,
+			currentDir:   "pkg/cmd/browse/",
+			fileArg:      filepath.FromSlash("./"),
 			expectedPath: "pkg/cmd/browse",
 		},
 		{
 			name:         "file that starts with '.'",
+			currentDir:   "pkg/cmd/browse/",
 			fileArg:      ".gitignore",
 			expectedPath: "pkg/cmd/browse/.gitignore",
 		},
 		{
 			name:         "file in current folder",
+			currentDir:   "pkg/cmd/browse/",
 			fileArg:      filepath.Join(".", "browse.go"),
 			expectedPath: "pkg/cmd/browse/browse.go",
 		},
 		{
 			name:         "file within parent folder",
+			currentDir:   "pkg/cmd/browse/",
 			fileArg:      filepath.Join("..", "browse.go"),
 			expectedPath: "pkg/cmd/browse.go",
 		},
 		{
 			name:         "file within parent folder uncleaned",
-			fileArg:      filepath.Join("..", ".") + s + s + s + "browse.go",
+			currentDir:   "pkg/cmd/browse/",
+			fileArg:      filepath.FromSlash(".././//browse.go"),
 			expectedPath: "pkg/cmd/browse.go",
 		},
 		{
 			name:         "different path from root directory",
+			currentDir:   "pkg/cmd/browse/",
 			fileArg:      filepath.Join("..", "..", "..", "internal/build/build.go"),
 			expectedPath: "internal/build/build.go",
 		},
 		{
 			name:         "go out of repository",
-			fileArg:      filepath.Join("..", "..", "..", "..", "..", "..") + s + "",
+			currentDir:   "pkg/cmd/browse/",
+			fileArg:      filepath.FromSlash("../../../../../../"),
 			expectedPath: "",
 		},
 		{
 			name:         "go to root of repository",
-			fileArg:      filepath.Join("..", "..", "..") + s + "",
+			currentDir:   "pkg/cmd/browse/",
+			fileArg:      filepath.Join("../../../"),
 			expectedPath: "",
 		},
 		{
@@ -504,7 +708,7 @@ func Test_parsePathFromFileArg(t *testing.T) {
 	for _, tt := range tests {
 		path, _, _, _ := parseFile(BrowseOptions{
 			PathFromRepoRoot: func() string {
-				return "pkg/cmd/browse/"
+				return tt.currentDir
 			}}, tt.fileArg)
 		assert.Equal(t, tt.expectedPath, path, tt.name)
 	}

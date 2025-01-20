@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/cli/cli/v2/api"
+	"github.com/shurcooL/githubv4"
 )
 
 // repoCreateInput is input parameters for the repoCreate method
@@ -23,6 +24,8 @@ type repoCreateInput struct {
 	HasWikiEnabled       bool
 	GitIgnoreTemplate    string
 	LicenseTemplate      string
+	IncludeAllBranches   bool
+	InitReadme           bool
 }
 
 // createRepositoryInputV3 is the payload for the repo create REST API
@@ -37,6 +40,7 @@ type createRepositoryInputV3 struct {
 	HasWikiEnabled    bool   `json:"has_wiki"`
 	GitIgnoreTemplate string `json:"gitignore_template,omitempty"`
 	LicenseTemplate   string `json:"license_template,omitempty"`
+	InitReadme        bool   `json:"auto_init,omitempty"`
 }
 
 // createRepositoryInput is the payload for the repo create GraphQL mutation
@@ -53,11 +57,19 @@ type createRepositoryInput struct {
 
 // cloneTemplateRepositoryInput is the payload for creating a repo from a template using GraphQL
 type cloneTemplateRepositoryInput struct {
-	Name         string `json:"name"`
-	Visibility   string `json:"visibility"`
-	Description  string `json:"description,omitempty"`
-	OwnerID      string `json:"ownerId"`
-	RepositoryID string `json:"repositoryId"`
+	Name               string `json:"name"`
+	Visibility         string `json:"visibility"`
+	Description        string `json:"description,omitempty"`
+	OwnerID            string `json:"ownerId"`
+	RepositoryID       string `json:"repositoryId"`
+	IncludeAllBranches bool   `json:"includeAllBranches"`
+}
+
+type updateRepositoryInput struct {
+	RepositoryID     string `json:"repositoryId"`
+	HasWikiEnabled   bool   `json:"hasWikiEnabled"`
+	HasIssuesEnabled bool   `json:"hasIssuesEnabled"`
+	HomepageURL      string `json:"homepageUrl,omitempty"`
 }
 
 // repoCreate creates a new GitHub repository
@@ -87,6 +99,11 @@ func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*a
 		isOrg = owner.IsOrganization()
 	}
 
+	isInternal := strings.ToLower(input.Visibility) == "internal"
+	if isInternal && !isOrg {
+		return nil, fmt.Errorf("internal repositories can only be created within an organization")
+	}
+
 	if input.TemplateRepositoryID != "" {
 		var response struct {
 			CloneTemplateRepository struct {
@@ -104,11 +121,12 @@ func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*a
 
 		variables := map[string]interface{}{
 			"input": cloneTemplateRepositoryInput{
-				Name:         input.Name,
-				Description:  input.Description,
-				Visibility:   strings.ToUpper(input.Visibility),
-				OwnerID:      ownerID,
-				RepositoryID: input.TemplateRepositoryID,
+				Name:               input.Name,
+				Description:        input.Description,
+				Visibility:         strings.ToUpper(input.Visibility),
+				OwnerID:            ownerID,
+				RepositoryID:       input.TemplateRepositoryID,
+				IncludeAllBranches: input.IncludeAllBranches,
 			},
 		}
 
@@ -128,10 +146,33 @@ func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*a
 			return nil, err
 		}
 
+		if !input.HasWikiEnabled || !input.HasIssuesEnabled || input.HomepageURL != "" {
+			updateVariables := map[string]interface{}{
+				"input": updateRepositoryInput{
+					RepositoryID:     response.CloneTemplateRepository.Repository.ID,
+					HasWikiEnabled:   input.HasWikiEnabled,
+					HasIssuesEnabled: input.HasIssuesEnabled,
+					HomepageURL:      input.HomepageURL,
+				},
+			}
+
+			if err := apiClient.GraphQL(hostname, `
+				mutation UpdateRepository($input: UpdateRepositoryInput!) {
+					updateRepository(input: $input) {
+						repository {
+							id
+						}
+					}
+				}
+			`, updateVariables, nil); err != nil {
+				return nil, err
+			}
+		}
+
 		return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname), nil
 	}
 
-	if input.GitIgnoreTemplate != "" || input.LicenseTemplate != "" {
+	if input.GitIgnoreTemplate != "" || input.LicenseTemplate != "" || input.InitReadme {
 		inputv3 := createRepositoryInputV3{
 			Name:              input.Name,
 			HomepageURL:       input.HomepageURL,
@@ -142,6 +183,7 @@ func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*a
 			HasWikiEnabled:    input.HasWikiEnabled,
 			GitIgnoreTemplate: input.GitIgnoreTemplate,
 			LicenseTemplate:   input.LicenseTemplate,
+			InitReadme:        input.InitReadme,
 		}
 
 		path := "user/repos"
@@ -230,24 +272,75 @@ func resolveOrganizationTeam(client *api.Client, hostname, orgName, teamSlug str
 	return &response, err
 }
 
-// listGitIgnoreTemplates uses API v3 here because gitignore template isn't supported by GraphQL yet.
-func listGitIgnoreTemplates(httpClient *http.Client, hostname string) ([]string, error) {
-	var gitIgnoreTemplates []string
-	client := api.NewClientFromHTTP(httpClient)
-	err := client.REST(hostname, "GET", "gitignore/templates", nil, &gitIgnoreTemplates)
-	if err != nil {
-		return []string{}, err
+func listTemplateRepositories(client *http.Client, hostname, owner string) ([]api.Repository, error) {
+	ownerConnection := "repositoryOwner(login: $owner)"
+
+	variables := map[string]interface{}{
+		"perPage": githubv4.Int(100),
+		"owner":   githubv4.String(owner),
 	}
-	return gitIgnoreTemplates, nil
+	inputs := []string{"$perPage:Int!", "$endCursor:String", "$owner:String!"}
+
+	type result struct {
+		RepositoryOwner struct {
+			Login        string
+			Repositories struct {
+				Nodes      []api.Repository
+				TotalCount int
+				PageInfo   struct {
+					HasNextPage bool
+					EndCursor   string
+				}
+			}
+		}
+	}
+
+	query := fmt.Sprintf(`query RepositoryList(%s) {
+		%s {
+			login
+			repositories(first: $perPage, after: $endCursor, ownerAffiliations: OWNER, orderBy: { field: PUSHED_AT, direction: DESC }) {
+				nodes{
+					id
+					name
+					isTemplate
+					defaultBranchRef {
+						name
+					}
+				}
+				totalCount
+				pageInfo{hasNextPage,endCursor}
+			}
+		}
+	}`, strings.Join(inputs, ","), ownerConnection)
+
+	apiClient := api.NewClientFromHTTP(client)
+	var templateRepositories []api.Repository
+	for {
+		var res result
+		err := apiClient.GraphQL(hostname, query, variables, &res)
+		if err != nil {
+			return nil, err
+		}
+
+		owner := res.RepositoryOwner
+
+		for _, repo := range owner.Repositories.Nodes {
+			if repo.IsTemplate {
+				templateRepositories = append(templateRepositories, repo)
+			}
+		}
+
+		if !owner.Repositories.PageInfo.HasNextPage {
+			break
+		}
+		variables["endCursor"] = githubv4.String(owner.Repositories.PageInfo.EndCursor)
+	}
+
+	return templateRepositories, nil
 }
 
-// listLicenseTemplates uses API v3 here because license template isn't supported by GraphQL yet.
-func listLicenseTemplates(httpClient *http.Client, hostname string) ([]api.License, error) {
-	var licenseTemplates []api.License
+// Returns the current username and any orgs that user is a member of.
+func userAndOrgs(httpClient *http.Client, hostname string) (string, []string, error) {
 	client := api.NewClientFromHTTP(httpClient)
-	err := client.REST(hostname, "GET", "licenses", nil, &licenseTemplates)
-	if err != nil {
-		return nil, err
-	}
-	return licenseTemplates, nil
+	return api.CurrentLoginNameAndOrgs(client, hostname)
 }
